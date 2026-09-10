@@ -594,9 +594,9 @@ def _detect_barcode_soview(
                             bx, by = _ocr_bottom25(back_img, pytesseract_mod)
 
                             if bx is not None and bx == expected_x:
-                                sol_pages = list(range(page_num, page_num + y_val))
+                                sol_pages = list(range(page_num, page_num + expected_x))
                                 closed_ranges[barcode_val] = sol_pages
-                                pages_to_advance = y_val
+                                pages_to_advance = expected_x
                                 back_found = True
                                 break
 
