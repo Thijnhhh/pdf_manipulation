@@ -509,10 +509,11 @@ Assumes every SOview page containing a 1D SOL barcode is a **single-page** docum
 Designed for PFL production runs where multi-page SOL documents occur and contain "Page X of Y" textual footer notations.
 1. **Step 1 (Gate Check):** Renders top 25% of page $i$ at 100 DPI; decodes 1D barcode via `pyzbar`. If no barcode or not in `target_sol_set`, advances $i \mathrel{+}= 1$ without OCR.
 2. **Step 2 (OCR Page X of Y):** If matched, renders bottom 25% crop and runs Tesseract OCR (with fallback upscaling to 150 DPI). If $Y=1$, records `[page_num]` and advances 1 page.
-3. **Step 3 (Backward Scan):** If $Y > 1$, backward scans offsets $Y-1$ down to 1:
+3. **Step 3 (Backward Scan):** If $Y > 1$, backward scans offsets $Y-1$ down to 1 (`expected_x = offset + 1`):
    - **Boundary Pre-check:** Checks top 25% of `back_page` for any 1D barcode. If found, this page starts a *different* SOL $\rightarrow$ skips OCR to avoid invalid boundary crossing.
    - **OCR Verification:** Confirms bottom 25% OCR matches `expected_x == offset + 1`.
-   - **Range Close:** On confirmation, records `[page_num .. page_num + Y - 1]` and skips ahead $i \mathrel{+}= Y$.
+   - **Range Close:** On confirmation (`bx == expected_x`), records `[page_num .. page_num + expected_x - 1]` (total `expected_x` pages) and skips ahead $i \mathrel{+}= \text{expected\_x}$.
+   - **Fallback:** If backward scan exhausts without confirmation (`not back_found`), records single page `[page_num]` and advances $i \mathrel{+}= 1$.
 
 ---
 
@@ -578,7 +579,7 @@ A single production SOview PDF file frequently bundles multiple Sales Orders wit
 | **Barcode Scan Area** | Full page pyzbar | Top 25% crop pyzbar | Top 25% crop (Gate check) | Top 25% crop pyzbar |
 | **Multi-page Delimitation** | 1D $\rightarrow$ wait for 2D barcode | ❌ None (1 page only) | ✅ OCR "Page X of Y" + Backward Scan | ✅ **Range accumulation until next barcode or EOF** |
 | **OCR Dependency** | ❌ None | ❌ None | ✅ Tesseract (Bottom 25%) | ❌ None |
-| **Page Skip-Ahead** | ❌ No | ❌ No | ✅ $i \mathrel{+}= Y$ upon confirmation | ❌ Sequential single-pass |
+| **Page Skip-Ahead** | ❌ No | ❌ No | ✅ $i \mathrel{+}= \text{expected\_x}$ upon confirmation | ❌ Sequential single-pass |
 | **Relative Throughput** | Baseline | **Fastest (~10x)** | Moderate | **Fastest (~10x)** |
 
 ---
