@@ -3,7 +3,7 @@
 ---
 
 ## Document Information
-* **Document Version:** 1.0.8
+* **Document Version:** 1.1.0
 * **Target Application:** PDF Manipulation Tool Desktop Edition
 * **Target Operating System:** Microsoft Windows 10 / 11 (64-bit)
 * **Author / Ownership:** Thinh Phung / Avery Dennison (AD) RFID FRU Team
@@ -400,7 +400,7 @@ The application is compiled into a standalone, single-file Windows executable vi
 pyinstaller --noconfirm build.spec
 ```
 The output binary will be compiled to:
-`dist/PDF Manipulation v1.0.8.exe`
+`dist/PDF Manipulation v1.1.0.exe`
 
 #### Architectural Breakdown of `build.spec`:
 1. **Dynamic Version Ingestion:**
