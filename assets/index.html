@@ -52,6 +52,36 @@
              ============================================================ -->
         <div id="dashboard-screen" class="screen active">
             <div class="dashboard">
+                <!-- ============================================================
+                     DASHBOARD CHANGELOG BOX (Top-Left Corner)
+                     ============================================================ -->
+                <div id="dashboard-changelog-box" class="dashboard-changelog">
+                    <div class="dashboard-changelog__header">
+                        <span class="dashboard-changelog__badge">📢 Updates</span>
+                        <button id="btn-close-changelog" class="dashboard-changelog__close"
+                            title="Thu gọn">&times;</button>
+                    </div>
+                    <div class="dashboard-changelog__body">
+                        <div class="dashboard-changelog__version-line">
+                            <span class="changelog-version-tag" id="changelog-version-text">v1.1.0:</span>
+                        </div>
+                        <ol class="dashboard-changelog__list">
+                            <li>Thay đổi cấu trúc file Input-PDF Merger Tool</li>
+                            <li>Add thêm module PDF Merger (RFID HT)</li>
+                            <li>Add thêm nút OCR để tăng tốc độ quét barcode trong SOview, chi tiết cách dùng xem trong
+                                sheet "Note: Nút OCR mode" trong file Input-PDF Merger Tool.</li>
+                        </ol>
+                    </div>
+                </div>
+
+                <!-- Collapsed Pill Button -->
+                <button id="btn-reopen-changelog" class="dashboard-changelog-pill" style="display: none;"
+                    title="Xem các điểm mới">
+                    <span class="pill-icon">📢</span>
+                    <span class="pill-version" id="changelog-pill-version-text">v1.1.0</span>
+                    <span class="pill-text">(Updates)</span>
+                </button>
+
                 <div class="dashboard__header">
                     <span class="dashboard__icon">📄</span>
                     <h1 class="dashboard__title">PDF Manipulation Tool</h1>

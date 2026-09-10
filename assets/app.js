@@ -415,6 +415,7 @@
                     if (btnUpdate) {
                         btnUpdate.textContent = 'v' + result.current_version + ' (Check for updates)';
                     }
+                    updateChangelogVersion(result.current_version);
                 }
 
                 checkForUpdateSilent();
@@ -2345,12 +2346,25 @@
 
     let mergerDataLoaded = false;
 
+    function updateChangelogVersion(ver) {
+        if (!ver || ver === '?') return;
+        const changelogVer = document.getElementById('changelog-version-text');
+        if (changelogVer) {
+            changelogVer.textContent = 'v' + ver + ':';
+        }
+        const changelogPillVer = document.getElementById('changelog-pill-version-text');
+        if (changelogPillVer) {
+            changelogPillVer.textContent = 'v' + ver;
+        }
+    }
+
     function initDashboard() {
         window.pywebview.api.get_local_version().then(ver => {
             const btnUpdate = document.getElementById('btn-dashboard-update');
             if (btnUpdate && ver !== '?') {
                 btnUpdate.textContent = 'v' + ver + ' (Check for updates)';
             }
+            updateChangelogVersion(ver);
         });
 
         // Module card clicks
@@ -2369,6 +2383,25 @@
         document.getElementById('card-combine').addEventListener('click', () => {
             showScreen('combine-screen');
         });
+
+        // Changelog box collapse / reopen
+        const changelogBox = document.getElementById('dashboard-changelog-box');
+        const btnCloseChangelog = document.getElementById('btn-close-changelog');
+        const btnReopenChangelog = document.getElementById('btn-reopen-changelog');
+
+        if (btnCloseChangelog && changelogBox && btnReopenChangelog) {
+            btnCloseChangelog.addEventListener('click', (e) => {
+                e.stopPropagation();
+                changelogBox.style.display = 'none';
+                btnReopenChangelog.style.display = 'inline-flex';
+            });
+
+            btnReopenChangelog.addEventListener('click', (e) => {
+                e.stopPropagation();
+                btnReopenChangelog.style.display = 'none';
+                changelogBox.style.display = 'block';
+            });
+        }
 
         // Update button
         const btnUpdate = document.getElementById('btn-dashboard-update');

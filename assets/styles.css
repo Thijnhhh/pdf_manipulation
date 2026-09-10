@@ -1234,6 +1234,152 @@
         height: 100%;
         padding: var(--space-2xl);
         gap: var(--space-xl);
+        position: relative;
+    }
+
+    /* ============================================================
+     * DASHBOARD CHANGELOG BOX (Top-Left Corner) - Modern Light Theme
+     * ============================================================ */
+    .dashboard-changelog {
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        max-width: 370px;
+        width: calc(100% - 40px);
+        background: rgba(255, 255, 255, 0.96);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid #e2e8f0;
+        border-radius: var(--radius-lg, 12px);
+        padding: 14px 16px;
+        box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.08), 0 4px 6px -2px rgba(15, 23, 42, 0.04);
+        z-index: 20;
+        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        animation: changelogFadeIn 0.35s ease-out;
+        text-align: left;
+    }
+
+    @keyframes changelogFadeIn {
+        from {
+            opacity: 0;
+            transform: translateY(-8px) scale(0.98);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+        }
+    }
+
+    .dashboard-changelog__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+    }
+
+    .dashboard-changelog__badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #4f46e5;
+        background: rgba(79, 70, 229, 0.08);
+        border: 1px solid rgba(79, 70, 229, 0.2);
+        padding: 2px 8px;
+        border-radius: 9999px;
+    }
+
+    .dashboard-changelog__close {
+        background: transparent;
+        border: none;
+        color: #94a3b8;
+        font-size: 1.25rem;
+        line-height: 1;
+        width: 24px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+    }
+
+    .dashboard-changelog__close:hover {
+        color: #0f172a;
+        background: rgba(15, 23, 42, 0.06);
+    }
+
+    .dashboard-changelog__version-line {
+        margin-bottom: 6px;
+    }
+
+    .changelog-version-tag {
+        color: #dc2626 !important;
+        font-weight: 700 !important;
+        font-size: 0.95rem;
+        letter-spacing: 0.02em;
+    }
+
+    .dashboard-changelog__list {
+        margin: 0;
+        padding-left: 20px;
+        color: #334155;
+        font-size: 0.82rem;
+        line-height: 1.5;
+    }
+
+    .dashboard-changelog__list li {
+        margin-bottom: 5px;
+        color: #334155;
+    }
+
+    .dashboard-changelog__list li:last-child {
+        margin-bottom: 0;
+    }
+
+    /* Collapsed Floating Pill */
+    .dashboard-changelog-pill {
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: rgba(255, 255, 255, 0.96);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid #e2e8f0;
+        border-radius: 9999px;
+        padding: 6px 14px;
+        color: #0f172a;
+        font-size: 0.82rem;
+        cursor: pointer;
+        box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+        z-index: 20;
+        transition: all 0.2s ease;
+        animation: changelogFadeIn 0.25s ease-out;
+    }
+
+    .dashboard-changelog-pill:hover {
+        background: #f8fafc;
+        border-color: #cbd5e1;
+        transform: translateY(-1px);
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+    }
+
+    .dashboard-changelog-pill .pill-version {
+        color: #dc2626;
+        font-weight: 700;
+    }
+
+    .dashboard-changelog-pill .pill-text {
+        color: #64748b;
+        font-size: 0.78rem;
+        font-weight: 500;
     }
 
     .dashboard__header {
