@@ -57,7 +57,7 @@ from backend.sheets_service import get_all_initial_data
 
 # ── Bridge Tracing ───────────────────────────────────────────
 # Set to False to silence all trace output after manual testing.
-TRACING_ENABLED = True
+TRACING_ENABLED = False
 
 _MAX_ARG_LEN = 40  # max chars per argument value in trace output
 
@@ -308,7 +308,8 @@ class BridgeApi:
                     self._eval(f"window._onPreFetchProgress({p_payload})")
 
                     try:
-                        if type_id == "layout" and job_map:
+                        is_layout_rfid = bool(type_id == "layout" and job_map)
+                        if is_layout_rfid:
                             search_keys = list(dict.fromkeys(str(j).strip() for j in job_map.values() if str(j).strip()))
                         else:
                             search_keys = unique_sos
@@ -316,7 +317,8 @@ class BridgeApi:
                         results_map = find_all_pdfs_batch(
                             folder_inputs[type_id],
                             search_keys,
-                            is_drive_map.get(type_id, False)
+                            is_drive_map.get(type_id, False),
+                            match_prefix_8=is_layout_rfid,
                         )
                     except Exception as exc:
                         # Push not-found for all SOLs in this group

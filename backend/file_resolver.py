@@ -202,9 +202,10 @@ def extract_folder_id(url_or_id: str) -> "str | None":
 
 
 # ── Public API ───────────────────────────────────────────────
-def find_all_pdfs_local_batch(folder_path: str, so_codes: list) -> dict:
+def find_all_pdfs_local_batch(folder_path: str, so_codes: list, match_prefix_8: bool = False) -> dict:
     """
     Search a local/network directory for ALL PDFs matching any of the so_codes.
+    If match_prefix_8 is True, matches filename's first 8 characters exactly with the job code.
     Returns: { so_code: [ {found, file_id, path, name}, ... ] }
     """
     clean_so_codes = list(dict.fromkeys(so.strip() for so in so_codes if so and isinstance(so, str) and so.strip()))
@@ -213,23 +214,35 @@ def find_all_pdfs_local_batch(folder_path: str, so_codes: list) -> dict:
         return {so: [{"found": False, "error": f"Folder not found: {folder_path}"}] for so in clean_so_codes}
 
     results = {so: [] for so in clean_so_codes}
-    lower_so_map = {so.lower(): so for so in clean_so_codes}
 
-    for f in base.rglob("*.pdf"):
-        name_lower = f.name.lower()
-        for so_lower, original_so in lower_so_map.items():
-            if so_lower in name_lower:
+    if match_prefix_8:
+        # RFID HT Layout: cut exactly the first 8 chars of filename and compare with job code
+        lower_job_map = {str(j).strip()[:8].lower(): str(j).strip() for j in clean_so_codes if str(j).strip()}
+        for f in base.rglob("*.pdf"):
+            prefix = f.name[:8].lower()
+            if prefix in lower_job_map:
+                original_so = lower_job_map[prefix]
                 f_path = str(f)
                 item = {"found": True, "file_id": f_path, "path": f_path, "name": f.name}
                 _RESOLVED_FILES_CACHE[f_path] = item
                 results[original_so].append(item)
+    else:
+        lower_so_map = {so.lower(): so for so in clean_so_codes}
+        for f in base.rglob("*.pdf"):
+            name_lower = f.name.lower()
+            for so_lower, original_so in lower_so_map.items():
+                if so_lower in name_lower:
+                    f_path = str(f)
+                    item = {"found": True, "file_id": f_path, "path": f_path, "name": f.name}
+                    _RESOLVED_FILES_CACHE[f_path] = item
+                    results[original_so].append(item)
 
     for so in results:
         results[so].sort(key=lambda x: x.get("name", "").lower())
 
     return results
 
-def find_all_pdfs_drive_batch(folder_url: str, so_codes: list) -> dict:
+def find_all_pdfs_drive_batch(folder_url: str, so_codes: list, match_prefix_8: bool = False) -> dict:
     """
     Global Search + In-Memory Tree + Concurrent Download for Google Drive.
     Returns: { so_code: [ {found, file_id, path, name, url}, ... ] }
@@ -328,8 +341,12 @@ def find_all_pdfs_drive_batch(folder_url: str, so_codes: list) -> dict:
                     name_lower = file_name.lower()
                     matched_sos = []
                     for so_lower, original_so in lower_so_map.items():
-                        if so_lower in chunk and so_lower in name_lower:
-                            matched_sos.append(original_so)
+                        if match_prefix_8:
+                            if file_name[:8].lower() == so_lower:
+                                matched_sos.append(original_so)
+                        else:
+                            if so_lower in chunk and so_lower in name_lower:
+                                matched_sos.append(original_so)
 
                     if matched_sos:
                         if file_id not in matched_files:
@@ -389,14 +406,14 @@ def find_all_pdfs_drive_batch(folder_url: str, so_codes: list) -> dict:
 
 
 
-def find_all_pdfs_batch(folder_input: str, so_codes: list, is_drive: bool) -> dict:
+def find_all_pdfs_batch(folder_input: str, so_codes: list, is_drive: bool, match_prefix_8: bool = False) -> dict:
     """
     Unified batch entry point.
     """
     if is_drive:
-        return find_all_pdfs_drive_batch(folder_input, so_codes)
+        return find_all_pdfs_drive_batch(folder_input, so_codes, match_prefix_8=match_prefix_8)
     else:
-        return find_all_pdfs_local_batch(folder_input, so_codes)
+        return find_all_pdfs_local_batch(folder_input, so_codes, match_prefix_8=match_prefix_8)
 
 
 

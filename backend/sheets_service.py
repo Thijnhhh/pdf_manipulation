@@ -20,7 +20,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # ── Constants ───────────────────────────────────────────────
-SPREADSHEET_ID   = "18BsC4TQJ3AC-xKk4C_tfiZqjVtke_ia1kL4ybBA4vQw"
+SPREADSHEET_ID   = "1dUHAsSLSa1thA9Mmy-4_B2A9sXSqsILfRVOoz_s_gAk"
 USERS_SHEET_NAME = "Users_Preset"
 
 SCOPES = [

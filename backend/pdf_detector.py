@@ -935,12 +935,13 @@ def run_auto_detect_all(
         t_search = time.perf_counter()
         try:
             if type_id == "layout" and job_map:
-                # RFID HT: Layout files in network folder are searched by Job number
+                # RFID HT: Layout files in network folder are searched by Job number (8-digit prefix)
                 unique_jobs = list(dict.fromkeys(str(j).strip() for j in job_map.values() if str(j).strip()))
                 batched_files[type_id] = find_all_pdfs_batch(
                     folder_inputs[type_id],
                     unique_jobs,
-                    is_drive_map.get(type_id, False)
+                    is_drive_map.get(type_id, False),
+                    match_prefix_8=True
                 )
                 search_desc = f"{len(unique_jobs)} unique Jobs"
             else:
