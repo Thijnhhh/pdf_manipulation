@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Manipulation Tool</title>
+    <meta name="description"
+        content="PDF Manipulation Desktop Application — merge, deduplicate, and combine multi-source PDFs.">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Styles (extracted from GAS Styles.html + desktop additions) -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+
+    <!-- ============================================================
+         INITIAL LOADING OVERLAY (shown while pywebview API warms up)
+         ============================================================ -->
+    <div id="app-loading-overlay">
+        <span class="app-logo">📄</span>
+        <div class="spinner active"
+            style="border-color:rgba(79,70,229,0.2);border-top-color:#4f46e5;width:32px;height:32px;border-width:3px;">
+        </div>
+        <span id="loading-msg">PDF Manipulation App</span>
+    </div>
+
+    <!-- ============================================================
+         UPDATE NOTIFICATION BANNER
+         ============================================================ -->
+    <div id="update-banner">
+        <span class="update-msg">
+            🚀 <strong>Update available</strong>
+            <span id="update-version-text"></span>
+            — Download in background and apply on restart.
+        </span>
+        <div style="display:flex;gap:8px;">
+            <button id="btn-apply-update" class="btn btn--primary btn--sm">Install Update</button>
+            <button id="btn-dismiss-update" class="btn btn--ghost btn--sm">Later</button>
+        </div>
+    </div>
+
+    <div id="app-container">
+
+        <!-- ============================================================
+             DASHBOARD SCREEN — Module Selection Hub
+             ============================================================ -->
+        <div id="dashboard-screen" class="screen active">
+            <div class="dashboard">
+                <div class="dashboard__header">
+                    <span class="dashboard__icon">📄</span>
+                    <h1 class="dashboard__title">PDF Manipulation Tool</h1>
+                    <p class="dashboard__subtitle">Desktop Edition — Select a module to get started</p>
+                </div>
+
+                <div class="dashboard__cards">
+                    <button class="module-card" data-module="merger" id="card-merger">
+                        <span class="module-card__icon">📑</span>
+                        <h2 class="module-card__title">PDF Merger (PFL)</h2>
+                    </button>
+
+                    <button class="module-card" data-module="merger_rfid" id="card-merger-rfid">
+                        <span class="module-card__icon">🏷️</span>
+                        <h2 class="module-card__title">PDF Merger (RFID HT)</h2>
+                    </button>
+
+                    <button class="module-card" data-module="deduplicate" id="card-deduplicate">
+                        <span class="module-card__icon">🔍</span>
+                        <h2 class="module-card__title">PDF Deduplicate</h2>
+                    </button>
+
+                    <button class="module-card" data-module="combine" id="card-combine">
+                        <span class="module-card__icon">📦</span>
+                        <h2 class="module-card__title">PDF Combine</h2>
+                    </button>
+                </div>
+
+                <div class="dashboard__footer" style="position: absolute; bottom: 20px; left: 20px;">
+                    <button id="btn-dashboard-update" class="btn btn--ghost btn--sm update-btn"
+                        style="color: var(--text-tertiary); font-size: 0.85rem; padding: 4px 8px; font-weight: normal; background: transparent; border: none; cursor: pointer;">
+                        v?.?.? (Check for updates)
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ============================================================
+             INPUT SCREEN — Configuration Card (PDF Merger Module)
+             ============================================================ -->
+        <div id="input-screen" class="screen">
+            <div class="module-screen">
+                <div class="module-screen__toolbar">
+                    <button id="btn-merger-back" class="btn btn--ghost">⬅ Back to Dashboard</button>
+                    <span class="toolbar__sol-badge">
+                        <span id="merger-toolbar-icon">📑</span>
+                        <span id="merger-toolbar-title">PDF Merger (PFL)</span>
+                    </span>
+                    <span></span>
+                </div>
+                <div class="module-screen__body">
+
+                    <!-- Flex row: config card + SOL preview panel -->
+                    <div class="merger-input-layout">
+
+                        <div class="config-card">
+
+                            <!-- Header -->
+                            <div class="config-card__header">
+                                <span class="config-card__icon" id="merger-header-icon">📄</span>
+                                <h1 class="config-card__title">PDF Merger Tool</h1>
+                                <p class="config-card__subtitle" id="merger-module-subtitle">PFL</p>
+                            </div>
+
+                            <!-- User Preset -->
+                            <div class="form-group">
+                                <label for="preset-select">User Preset</label>
+                                <select id="preset-select">
+                                    <option value="">— Select a user —</option>
+                                </select>
+                            </div>
+
+                            <!-- SOL Input Mode Tabs -->
+                            <div class="form-group" id="sol-entry-source-group">
+                                <label>SOL Entry Source</label>
+                                <div class="input-mode-tabs">
+                                    <button class="input-mode-tab active" data-mode="sheets">📊 SOLs from Google
+                                        Sheets</button>
+                                    <button class="input-mode-tab" data-mode="manual">✏️ Manual SOL Input</button>
+                                </div>
+                            </div>
+
+                            <!-- Tab 1: Sheets (placeholder — SOL list fetched on Fetch click) -->
+                            <div id="tab-sheets-pane" class="input-tab-pane active"></div>
+
+                            <!-- Tab 2: Manual SOL Input -->
+                            <div id="tab-manual-pane" class="input-tab-pane">
+                                <div class="form-group">
+                                    <label for="manual-sol-textarea">SOL Codes (newline or comma separated)</label>
+                                    <textarea id="manual-sol-textarea"
+                                        placeholder="123456789-1&#10;987654321-1&#10;135794680-1"></textarea>
+                                </div>
+                            </div>
+
+                            <hr class="form-divider">
+
+                            <!-- ── Folder Inputs (generated by JS, each with Drive toggle) ── -->
+                            <div id="folder-inputs-container">
+                                <!-- Populated dynamically by app.js generateFolderInputs() -->
+                            </div>
+
+                            <!-- Output Folder (local / network path) -->
+                            <div class="form-group">
+                                <label for="output-folder-input">Output Folder (Local or Network Path)</label>
+                                <input type="text" id="output-folder-input"
+                                    placeholder="C:\Output or \\server\share\output" />
+                                <p class="output-path-hint">Exported PDFs will be saved directly to this path.</p>
+                            </div>
+
+                            <hr class="form-divider">
+
+                            <!-- Action Buttons -->
+                            <div style="display:flex;gap:var(--space-sm);width:100%;">
+                                <button id="btn-fetch" class="btn btn--primary" style="flex:1;" disabled>
+                                    <span id="fetch-spinner" class="spinner"></span>
+                                    <span id="fetch-label">Fetch PDFs</span>
+                                </button>
+                                <button id="btn-auto-detect" class="btn btn--primary" style="flex:1;"
+                                    title="Coming soon: OCR Auto Detection">
+                                    Auto Detect
+                                </button>
+                            </div>
+
+                            <!-- Error Display -->
+                            <div id="input-error" class="hidden"
+                                style="margin-top:var(--space-md);padding:10px;background:rgba(225,29,72,0.08);border:1px solid rgba(225,29,72,0.2);border-radius:var(--radius-md);color:var(--accent-danger);font-size:0.8rem;">
+                            </div>
+                        </div><!-- /.config-card -->
+
+                        <!-- ── SOL Preview Panel (shown after preset is selected) ── -->
+                        <div id="preset-sol-preview" class="preset-sol-preview hidden">
+                            <div class="preset-sol-preview__header">
+                                <span class="preset-sol-preview__title">📋 SOL List</span>
+                                <span id="preset-sol-count" class="preset-sol-preview__badge">0</span>
+                            </div>
+                            <div class="preset-sol-preview__body">
+                                <table class="preset-sol-table">
+                                    <thead id="preset-sol-thead">
+                                        <tr>
+                                            <th>#</th>
+                                            <th>SOL Code</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="preset-sol-tbody"></tbody>
+                                </table>
+                            </div>
+                        </div><!-- /#preset-sol-preview -->
+
+                    </div><!-- /.merger-input-layout -->
+                </div>
+            </div>
+        </div>
+
+        <!-- ============================================================
+             WORKSPACE SCREEN — 3-Panel Interface
+             ============================================================ -->
+        <div id="workspace-screen" class="screen">
+
+            <!-- Top Toolbar -->
+            <div class="toolbar">
+                <div class="toolbar__left">
+                    <button id="btn-back" class="btn btn--ghost">⬅ Back to Input</button>
+                </div>
+                <div class="toolbar__center">
+                    <span id="toolbar-sol-badge" class="toolbar__sol-badge">
+                        <span>📋</span>
+                        <span id="toolbar-sol-label">No SOL Selected</span>
+                    </span>
+                </div>
+                <div class="toolbar__right" style="display:flex;align-items:center;gap:10px;">
+                    <span id="toolbar-file-count" style="font-size:0.75rem;color:var(--text-secondary);"></span>
+                    <div id="toolbar-path-box"
+                        style="display:none;align-items:center;gap:6px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:var(--radius-sm);padding:3px 8px;">
+                        <span style="font-size:0.75rem;color:var(--text-secondary);font-weight:600;">Path:</span>
+                        <input type="text" id="toolbar-file-path" readonly
+                            style="border:none;background:transparent;color:var(--text-primary);font-size:0.75rem;font-family:monospace;width:240px;outline:none;" />
+                        <button id="btn-copy-path" class="btn btn--sm btn--ghost"
+                            style="padding:2px 6px;font-size:0.75rem;" title="Copy full path">📋 Copy</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 3-Panel Workspace -->
+            <div class="workspace-panels">
+
+                <!-- PANEL 1: SOL List -->
+                <div id="panel-sol" class="panel">
+                    <div class="panel__header">
+                        <span class="panel__title">📋 SOL Codes</span>
+                        <span id="sol-count"
+                            style="font-size:0.75rem;font-weight:600;color:var(--text-secondary);">0</span>
+                    </div>
+                    <div
+                        style="padding:6px 8px;border-bottom:1px solid var(--border-color);background:var(--bg-secondary);">
+                        <input type="text" id="sol-search-input" placeholder="🔍 Search SOL..."
+                            style="width:100%;padding:6px 10px;font-size:0.8rem;border:1px solid var(--border-color);border-radius:var(--radius-sm);outline:none;font-family:inherit;" />
+                    </div>
+                    <div class="panel__body" id="sol-list-body">
+                        <!-- SOL items populated dynamically -->
+                    </div>
+                </div>
+
+                <!-- PANEL 2: Source Viewer -->
+                <div id="panel-source" class="panel">
+                    <div class="panel__header">
+                        <span class="panel__title">📖 Source Viewer</span>
+                        <div class="source-controls__right">
+                            <div class="view-toggle">
+                                <button class="view-toggle__btn active" data-view="grid" title="Grid View">▦</button>
+                                <button class="view-toggle__btn" data-view="focus" title="Focus View">▣</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Source Controls: Tabs + Add All -->
+                    <div class="source-controls">
+                        <div class="source-controls__left">
+                            <div id="source-tabs" class="source-tabs">
+                                <!-- Tabs populated dynamically -->
+                            </div>
+                        </div>
+                        <div class="source-controls__right" style="display:flex;gap:6px;">
+                            <button id="btn-add-range" class="btn btn--sm btn--secondary"
+                                title="Add a range of pages (e.g., 5 to 15)">📑 Add Range</button>
+                            <button id="btn-add-all" class="btn btn--sm btn--secondary"
+                                title="Add all pages from this source">➕ Add All</button>
+                        </div>
+                    </div>
+
+                    <!-- Source Content Area -->
+                    <div class="panel__body" id="source-content">
+                        <div class="source-empty">
+                            <span style="font-size:2rem;opacity:0.5;">📂</span>
+                            <span>Select a SOL code to view PDFs</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PANEL 3: Assembly Panel -->
+                <div id="panel-builder" class="panel">
+                    <div class="panel__header">
+                        <span class="panel__title">🔧 Assembly Queue</span>
+                        <button id="btn-clear-assembly" class="btn btn--ghost btn--sm btn--danger" title="Clear all">✕
+                            Clear</button>
+                    </div>
+
+                    <div class="panel__body" id="assembly-body">
+                        <div id="assembly-empty" class="assembly-empty">
+                            <span style="font-size:1.8rem;opacity:0.4;">📥</span>
+                            <span>Click pages or "Add All" to start assembling</span>
+                        </div>
+                        <div id="assembly-grouped-container">
+                            <!-- Grouped SOL sections rendered dynamically -->
+                        </div>
+                    </div>
+
+                    <!-- Assembly Footer -->
+                    <div class="assembly-footer">
+                        <div class="assembly-counter">
+                            Total queued pages: <strong id="assembly-page-count">0</strong>
+                        </div>
+
+                        <!-- Export Mode Radio -->
+                        <div class="export-options">
+                            <label class="export-option selected" id="export-opt-split">
+                                <input type="radio" name="export-mode" value="split" checked>
+                                <span>Split — 1 PDF per SOL</span>
+                            </label>
+                            <label class="export-option" id="export-opt-merge">
+                                <input type="radio" name="export-mode" value="merge">
+                                <span>Merge — 1 PDF (All SOLs)</span>
+                            </label>
+                        </div>
+
+                        <!-- Progress Bar -->
+                        <div class="progress-bar hidden" id="export-progress">
+                            <div class="progress-bar__fill" id="export-progress-fill"></div>
+                        </div>
+
+                        <!-- Export Button -->
+                        <button id="btn-export" class="btn btn--success btn--full" disabled>
+                            🖨️ Export PDF
+                        </button>
+                    </div>
+                </div>
+
+            </div><!-- /.workspace-panels -->
+        </div><!-- /#workspace-screen -->
+
+        <!-- ============================================================
+         AUTO DETECT RESULTS SCREEN
+         ============================================================ -->
+        <div id="auto-detect-results-screen" class="screen">
+            <div class="toolbar">
+                <div class="toolbar__left">
+                    <button id="btn-ad-back" class="btn btn--ghost">⬅ Back to Input</button>
+                </div>
+                <div class="toolbar__center">
+                    <span class="toolbar__sol-badge">
+                        <span>🤖</span>
+                        <span id="ad-results-title">Auto Detect Results</span>
+                    </span>
+                </div>
+                <div class="toolbar__right">
+                    <span id="ad-results-subtitle" style="font-size:0.75rem;color:var(--text-secondary);"></span>
+                </div>
+            </div>
+
+            <div style="display:flex;flex-direction:column;flex:1;overflow:hidden;padding:16px;gap:12px;">
+                <!-- Results Table -->
+                <div style="flex:1;overflow-y:auto;">
+                    <table id="ad-results-table" style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+                        <thead>
+                            <tr>
+                                <th
+                                    style="text-align:left;padding:8px 12px;border-bottom:1px solid var(--border-color);color:var(--text-secondary);font-weight:600;">
+                                    SOL Code</th>
+                                <th
+                                    style="text-align:center;padding:8px 12px;border-bottom:1px solid var(--border-color);color:var(--text-secondary);font-weight:600;">
+                                    SOview Pages</th>
+                                <th
+                                    style="text-align:center;padding:8px 12px;border-bottom:1px solid var(--border-color);color:var(--text-secondary);font-weight:600;">
+                                    Layout Pages</th>
+                                <th
+                                    style="text-align:center;padding:8px 12px;border-bottom:1px solid var(--border-color);color:var(--text-secondary);font-weight:600;">
+                                    Total</th>
+                                <th
+                                    style="text-align:center;padding:8px 12px;border-bottom:1px solid var(--border-color);color:var(--text-secondary);font-weight:600;">
+                                    Preview</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ad-results-tbody">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Export Footer -->
+                <div class="assembly-footer">
+                    <div class="export-options" id="ad-export-options">
+                        <label class="export-option selected" id="ad-export-opt-split">
+                            <input type="radio" name="ad-export-mode" value="split" checked>
+                            <span>Split — 1 PDF per SOL</span>
+                        </label>
+                        <label class="export-option" id="ad-export-opt-merge">
+                            <input type="radio" name="ad-export-mode" value="merge">
+                            <span>Merge — 1 PDF (All SOLs)</span>
+                        </label>
+                    </div>
+                    <div class="progress-bar hidden" id="ad-export-progress">
+                        <div class="progress-bar__fill" id="ad-export-progress-fill"></div>
+                    </div>
+                    <button id="btn-ad-export" class="btn btn--success btn--full" disabled>
+                        🖨️ Export PDF
+                    </button>
+                </div>
+            </div>
+        </div><!-- /#auto-detect-results-screen -->
+
+        <!-- ============================================================
+         DEDUPLICATE SCREEN — Barcode-Based Page Deduplication
+         ============================================================ -->
+        <div id="deduplicate-screen" class="screen">
+            <div class="module-screen">
+                <div class="module-screen__toolbar">
+                    <button id="btn-dedup-back" class="btn btn--ghost">⬅ Back to Dashboard</button>
+                    <span class="toolbar__sol-badge">
+                        <span>🔍</span>
+                        <span>PDF Deduplicate</span>
+                    </span>
+                    <span></span>
+                </div>
+
+                <div class="module-screen__body">
+                    <!-- Left: Input Config -->
+                    <div class="dedup-config">
+                        <div class="config-card" style="padding:20px;">
+                            <h3 style="margin-bottom:12px;font-size:1rem;font-weight:700;">📂 Input Files</h3>
+
+                            <!-- Tab switcher -->
+                            <div class="dedup-input-tabs"
+                                style="display:flex;gap:0;margin-bottom:16px;border:1px solid var(--border-color);border-radius:var(--radius-sm);overflow:hidden;">
+                                <button class="dedup-input-tab active" data-dedup-mode="browse"
+                                    style="flex:1;padding:8px 12px;font-size:0.82rem;font-weight:600;border:none;cursor:pointer;background:var(--accent-primary);color:#fff;transition:all 0.2s;">
+                                    📁 Browse Files
+                                </button>
+                                <button class="dedup-input-tab" data-dedup-mode="sol"
+                                    style="flex:1;padding:8px 12px;font-size:0.82rem;font-weight:600;border:none;cursor:pointer;background:var(--bg-tertiary);color:var(--text-secondary);transition:all 0.2s;">
+                                    🔍 SOL Search
+                                </button>
+                            </div>
+
+                            <!-- Tab Pane: Browse Files (existing) -->
+                            <div id="dedup-pane-browse" class="dedup-input-pane">
+                                <button id="btn-dedup-browse" class="btn btn--primary btn--full"
+                                    style="margin-bottom:12px;">
+                                    📁 Browse PDF Files
+                                </button>
+
+                                <div id="dedup-file-list" class="dedup-file-list">
+                                    <div class="dedup-file-list__empty">No files selected. Click "Browse" to add PDFs.
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Tab Pane: SOL Search (new) -->
+                            <div id="dedup-pane-sol" class="dedup-input-pane" style="display:none;">
+                                <label
+                                    style="font-size:0.82rem;font-weight:600;color:var(--text-secondary);margin-bottom:6px;display:block;">
+                                    SOL IDs (separated by space, comma, semicolon, or newline)
+                                </label>
+                                <textarea id="dedup-sol-textarea"
+                                    placeholder="Enter SOL IDs, e.g.&#10;123456789-1&#10;123456789-2, 987654321-1"
+                                    style="min-height:90px;resize:vertical;margin-bottom:12px;"></textarea>
+
+                                <label
+                                    style="font-size:0.82rem;font-weight:600;color:var(--text-secondary);margin-bottom:6px;display:block;">
+                                    📂 Source Folder
+                                </label>
+                                <div style="display:flex;gap:8px;margin-bottom:12px;">
+                                    <input type="text" id="dedup-sol-folder" placeholder="Select source folder..."
+                                        value="\\FSPDVN06\GroupDisk-Pro\Thermal\PRERESS\UNIQLO\UNIQLO FRU\FRU_SB\FRU_SB_2026"
+                                        readonly style="flex:1;" />
+                                    <button id="btn-dedup-sol-folder-browse" class="btn btn--secondary">Browse</button>
+                                </div>
+
+                                <button id="btn-dedup-sol-search" class="btn btn--primary btn--full"
+                                    style="margin-bottom:12px;" disabled>
+                                    🔍 Search Files
+                                </button>
+
+                                <div id="dedup-sol-file-list" class="dedup-file-list">
+                                    <div class="dedup-file-list__empty">Enter SOL IDs and select a folder, then click
+                                        "Search Files".</div>
+                                </div>
+                            </div>
+
+                            <hr class="form-divider">
+
+                            <h3 style="margin-bottom:12px;font-size:1rem;font-weight:700;">📁 Output Folder</h3>
+                            <div style="display:flex;gap:8px;margin-bottom:16px;">
+                                <input type="text" id="dedup-output-folder" placeholder="Select output folder..."
+                                    readonly style="flex:1;" />
+                                <button id="btn-dedup-output-browse" class="btn btn--secondary">Browse</button>
+                            </div>
+
+                            <div style="margin-bottom:8px; display:flex; justify-content:flex-start;">
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"
+                                    title="Gộp các file PDF lại với nhau theo thứ tự SOL input">
+                                    <input type="checkbox" id="dedup-combine-checkbox" />
+                                    <span style="font-weight:600; font-size:0.9rem;">Combine output</span>
+                                </label>
+                            </div>
+                            <button id="btn-dedup-run" class="btn btn--success btn--full" disabled>
+                                ▶ Run Deduplicate
+                            </button>
+
+                            <!-- Progress -->
+                            <div id="dedup-progress" class="dedup-progress hidden">
+                                <div class="dedup-progress__header">
+                                    <span id="dedup-progress-text">Processing...</span>
+                                </div>
+                                <div class="progress-bar">
+                                    <div class="progress-bar__fill" id="dedup-progress-fill" style="width:0%;"></div>
+                                </div>
+                            </div>
+
+                            <!-- Summary -->
+                            <div id="dedup-summary" class="dedup-summary hidden"></div>
+                        </div>
+                    </div>
+
+
+                </div>
+            </div>
+        </div><!-- /#deduplicate-screen -->
+
+        <!-- ============================================================
+         COMBINE SCREEN — SOL-Based PDF Search & Merge
+         ============================================================ -->
+        <div id="combine-screen" class="screen">
+            <div class="module-screen">
+                <div class="module-screen__toolbar">
+                    <button id="btn-combine-back" class="btn btn--ghost">⬅ Back to Dashboard</button>
+                    <span class="toolbar__sol-badge">
+                        <span>📦</span>
+                        <span>PDF Combine</span>
+                    </span>
+                    <span></span>
+                </div>
+
+                <div class="module-screen__body">
+                    <!-- Left: Input Config -->
+                    <div class="combine-config">
+                        <div class="config-card" style="padding:20px;">
+                            <h3 style="margin-bottom:12px;font-size:1rem;font-weight:700;">📝 SOL IDs</h3>
+                            <textarea id="combine-sol-textarea"
+                                placeholder="Enter SOL IDs separated by spaces, commas, semicolons, or newlines..."
+                                style="min-height:100px;resize:vertical;"></textarea>
+
+                            <hr class="form-divider">
+
+                            <h3 style="margin-bottom:12px;font-size:1rem;font-weight:700;">📂 Input Folders</h3>
+                            <button id="btn-combine-add-folder" class="btn btn--primary btn--full"
+                                style="margin-bottom:12px;">
+                                📁 Add Folder
+                            </button>
+                            <div id="combine-folder-list" class="combine-folder-list">
+                                <div class="combine-folder-list__empty">No folders added. Click "Add Folder" above.
+                                </div>
+                            </div>
+
+                            <hr class="form-divider">
+
+                            <h3 style="margin-bottom:12px;font-size:1rem;font-weight:700;">📁 Output Folder</h3>
+                            <div style="display:flex;gap:8px;margin-bottom:16px;">
+                                <input type="text" id="combine-output-folder" placeholder="Select output folder..."
+                                    readonly style="flex:1;" />
+                                <button id="btn-combine-output-browse" class="btn btn--secondary">Browse</button>
+                            </div>
+
+                            <!-- Export Mode Radio -->
+                            <div class="export-options" style="margin-bottom: 16px;">
+                                <label class="export-option selected" id="combine-opt-split">
+                                    <input type="radio" name="combine-export-mode" value="split" checked>
+                                    <span>Split — 1 PDF per SOL</span>
+                                </label>
+                                <label class="export-option" id="combine-opt-merge">
+                                    <input type="radio" name="combine-export-mode" value="merge">
+                                    <span>Merge — 1 PDF (All SOLs)</span>
+                                </label>
+                            </div>
+
+                            <div style="display:flex;gap:8px;">
+                                <button id="btn-combine-search" class="btn btn--primary" style="flex:1;" disabled>
+                                    🔍 Search Files
+                                </button>
+                                <button id="btn-combine-export" class="btn btn--success" style="flex:1;" disabled>
+                                    📤 Export
+                                </button>
+                            </div>
+
+                            <!-- Progress -->
+                            <div id="combine-progress" class="combine-progress hidden">
+                                <div class="combine-progress__header">
+                                    <span id="combine-progress-text">Processing...</span>
+                                </div>
+                                <div class="progress-bar">
+                                    <div class="progress-bar__fill" id="combine-progress-fill" style="width:0%;"></div>
+                                </div>
+                            </div>
+
+                            <!-- Summary -->
+                            <div id="combine-summary" class="combine-summary hidden"></div>
+                        </div>
+                    </div>
+
+                    <!-- Right: Preview Panel -->
+                    <div class="combine-preview-panel">
+                        <div class="panel__header">
+                            <span class="panel__title">📋 Preview</span>
+                            <span id="combine-preview-count"
+                                style="font-size:0.75rem;font-weight:600;color:var(--text-secondary);"></span>
+                        </div>
+                        <div class="panel__body" id="combine-preview-body">
+                            <div class="combine-preview-empty">Search results will appear here. Enter SOL IDs and add
+                                folders, then click "Search Files".</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div><!-- /#combine-screen -->
+
+    </div><!-- /#app-container -->
+
+    <!-- ============================================================
+         LIGHTBOX / ZOOM & ROTATE OVERLAY
+         ============================================================ -->
+    <div id="lightbox" class="lightbox">
+        <div class="lightbox__toolbar">
+            <button id="lightbox-zoom-out" class="lightbox__btn" title="Zoom Out">🔍−</button>
+            <span id="lightbox-zoom-level"
+                style="font-size:0.8rem;color:var(--text-secondary);font-weight:600;">100%</span>
+            <button id="lightbox-zoom-in" class="lightbox__btn" title="Zoom In">🔍+</button>
+            <button id="lightbox-rotate" class="lightbox__btn">🔄 Rotate (90°)</button>
+            <button id="lightbox-reset" class="lightbox__btn">Reset</button>
+            <button id="lightbox-close" class="lightbox__btn"
+                style="background:rgba(225,29,72,0.1);color:var(--accent-danger);border-color:rgba(225,29,72,0.2);">✕
+                Close</button>
+        </div>
+        <div class="lightbox__canvas-container" id="lightbox-container">
+            <div id="lightbox-canvas-wrapper" class="lightbox__canvas-wrapper">
+                <img id="lightbox-img" alt="Page preview"
+                    style="max-width:none;display:block;box-shadow:0 10px 30px rgba(0,0,0,0.3);border-radius:6px;" />
+            </div>
+        </div>
+        <div class="lightbox__info" id="lightbox-info"></div>
+    </div>
+
+    <!-- Custom Prompt Modal (replaces browser native prompt to hide localhost header) -->
+    <div id="custom-prompt-modal" class="lightbox" style="z-index:2100;">
+        <div class="config-card"
+            style="max-width:400px;padding:24px;background:var(--bg-secondary);animation:fadeSlideUp 0.25s ease-out both;">
+            <h3 id="custom-prompt-title" style="margin-bottom:8px;font-size:1.05rem;font-weight:700;">Add Page Range
+            </h3>
+            <p id="custom-prompt-msg"
+                style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:16px;line-height:1.4;"></p>
+            <div class="form-group" style="margin-bottom:18px;">
+                <input type="text" id="custom-prompt-input" placeholder="e.g. 5-15"
+                    style="width:100%;padding:9px 12px;font-size:0.9rem;" />
+            </div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;">
+                <button id="custom-prompt-cancel" class="btn btn--secondary btn--sm">Cancel</button>
+                <button id="custom-prompt-confirm" class="btn btn--primary btn--sm">Add Range</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================
+         AUTO DETECT — CONFIGURATION MODAL
+         ============================================================ -->
+    <div id="auto-detect-modal" class="lightbox" style="z-index:2000;">
+        <div class="config-card"
+            style="max-width:680px;width:92%;max-height:88vh;overflow-y:auto;padding:28px 28px 24px;background:var(--bg-secondary);animation:fadeSlideUp 0.25s ease-out both;">
+
+            <!-- Header -->
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+                <span style="font-size:1.5rem;">🤖</span>
+                <div>
+                    <h2 style="margin:0;font-size:1.1rem;font-weight:700;">Auto Detect Configuration</h2>
+                    <p style="margin:4px 0 0;font-size:0.8rem;color:var(--text-secondary);">Set the reading method
+                        priority for each PDF type. Use exceptions to override per SOL.</p>
+                </div>
+            </div>
+
+            <!-- Global Priority Grid -->
+            <div style="margin-bottom:20px;">
+                <div
+                    style="font-size:0.8rem;font-weight:600;color:var(--text-secondary);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em;">
+                    Global Priorities</div>
+                <table id="ad-config-grid" style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+                    <thead>
+                        <tr>
+                            <th
+                                style="text-align:left;padding:8px 12px;border-bottom:1px solid var(--border-color);color:var(--text-secondary);font-weight:600;">
+                                PDF Type</th>
+                            <th
+                                style="text-align:center;padding:8px 12px;border-bottom:1px solid var(--border-color);color:var(--text-secondary);font-weight:600;">
+                                Priority 1</th>
+                            <th
+                                style="text-align:center;padding:8px 12px;border-bottom:1px solid var(--border-color);color:var(--text-secondary);font-weight:600;">
+                                Priority 2</th>
+                            <th
+                                style="text-align:center;padding:8px 12px;border-bottom:1px solid var(--border-color);color:var(--text-secondary);font-weight:600;">
+                                Priority 3</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ad-config-tbody">
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Exceptions Section -->
+            <div style="margin-bottom:20px;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                    <div
+                        style="font-size:0.8rem;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.05em;">
+                        Exceptions (per SOL overrides)</div>
+                    <button id="ad-except-btn" class="btn btn--sm btn--secondary"
+                        style="padding:4px 10px;font-size:0.75rem;">+ Add Exception</button>
+                </div>
+                <div id="ad-exceptions-container" style="display:flex;flex-direction:column;gap:6px;">
+                    <!-- Exception rows populated by JS -->
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div
+                style="display:flex;align-items:center;justify-content:space-between;padding-top:8px;border-top:1px solid var(--border-color);gap:8px;">
+                <!-- Left: OCR Mode toggle -->
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <button id="ad-ocr-toggle-btn" type="button"
+                        title="Enable OCR scan to recognize SOview more than or equal 2 pages"
+                        style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;font-size:0.8rem;font-weight:600;border-radius:var(--radius-sm);cursor:pointer;transition:all 0.2s ease;border:1px solid var(--border-color);background:var(--bg-primary);color:var(--text-secondary);">
+                        <span id="ad-ocr-icon">⚡</span>
+                        <span id="ad-ocr-label">OCR Mode: OFF</span>
+                    </button>
+                    <span id="ad-ocr-desc" style="font-size:0.75rem;color:var(--text-secondary);">Fast 1D barcode
+                        only</span>
+                </div>
+                <!-- Right: Cancel / Run -->
+                <div style="display:flex;gap:8px;">
+                    <button id="ad-modal-cancel-btn" class="btn btn--ghost">Cancel</button>
+                    <button id="ad-run-btn" class="btn btn--primary">▶ Run Auto Detect</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================
+         AUTO DETECT — PROGRESS MODAL
+         ============================================================ -->
+    <div id="auto-detect-progress-modal" class="lightbox" style="z-index:2050;">
+        <div class="config-card"
+            style="max-width:480px;width:90%;padding:28px;background:var(--bg-secondary);animation:fadeSlideUp 0.25s ease-out both;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+                <div class="spinner active"
+                    style="width:20px;height:20px;border-width:2px;border-color:rgba(79,70,229,0.2);border-top-color:#4f46e5;flex-shrink:0;">
+                </div>
+                <h3 style="margin:0;font-size:1rem;font-weight:700;">Auto Detect Running…</h3>
+            </div>
+
+            <div style="margin-bottom:16px; font-size:0.85rem;">
+                <ul id="ad-sol-list"
+                    style="list-style:none; padding:0; margin:0; max-height:220px; overflow-y:auto; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-primary);">
+                    <!-- Dynamically populated SOL checklist -->
+                </ul>
+            </div>
+
+            <div class="progress-bar" style="margin-bottom:16px;">
+                <div class="progress-bar__fill" id="ad-prog-fill" style="width:0%;"></div>
+            </div>
+
+            <div style="text-align:right;">
+                <button id="ad-progress-cancel-btn" class="btn btn--sm"
+                    style="background:rgba(225,29,72,0.08);color:var(--accent-danger);border:1px solid rgba(225,29,72,0.2);">✕
+                    Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================
+         AUTO DETECT — PAGE PREVIEW MODAL (Continuous Page Layout + Zoom)
+         ============================================================ -->
+    <div id="auto-detect-preview-modal" class="lightbox" style="z-index:2100;">
+        <div
+            style="background:var(--bg-secondary);border-radius:var(--radius-lg);width:92%;max-width:980px;height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 25px 60px rgba(0,0,0,0.5);animation:fadeSlideUp 0.25s ease-out both;">
+
+            <!-- Toolbar -->
+            <div
+                style="display:flex;align-items:center;justify-content:space-between;padding:10px 18px;border-bottom:1px solid var(--border-color);background:var(--bg-tertiary);flex-shrink:0;">
+                <h3 id="ad-preview-title" style="margin:0;font-size:0.95rem;font-weight:700;color:var(--text-primary);">
+                    Preview</h3>
+
+                <!-- Zoom Controls -->
+                <div style="display:flex;align-items:center;gap:6px;">
+                    <button id="ad-preview-zoom-out" class="btn btn--secondary btn--sm" style="padding:4px 10px;"
+                        title="Zoom Out (Ctrl + Scroll Down)">🔍−</button>
+                    <span id="ad-preview-zoom-level"
+                        style="font-size:0.8rem;font-weight:600;color:var(--text-secondary);min-width:45px;text-align:center;">100%</span>
+                    <button id="ad-preview-zoom-in" class="btn btn--secondary btn--sm" style="padding:4px 10px;"
+                        title="Zoom In (Ctrl + Scroll Up)">🔍+</button>
+                    <button id="ad-preview-zoom-reset" class="btn btn--secondary btn--sm" style="padding:4px 10px;"
+                        title="Reset Zoom">Reset</button>
+                    <div style="width:1px;height:16px;background:var(--border-color);margin:0 4px;"></div>
+                    <button id="ad-preview-close-btn" class="btn btn--ghost btn--sm"
+                        style="background:rgba(225,29,72,0.1);color:var(--accent-danger);border:1px solid rgba(225,29,72,0.2);">✕
+                        Close</button>
+                </div>
+            </div>
+
+            <!-- Scrollable Continuous Document Container -->
+            <div id="ad-preview-scroll-area"
+                style="flex:1;overflow:auto;padding:24px 16px;background:var(--bg-primary);display:flex;flex-direction:column;align-items:center;">
+                <div id="ad-preview-wrapper"
+                    style="display:flex;flex-direction:column;align-items:center;gap:24px;width:100%;max-width:760px;transform-origin:top center;transition:transform 0.15s ease-out;">
+                    <!-- Vertical page cards populated by JS -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================
+         PRE-FETCH ALL PDFS — PROGRESS MODAL
+         ============================================================ -->
+    <div id="pre-fetch-modal" class="lightbox" style="z-index:2050;">
+        <div class="config-card"
+            style="max-width:480px;width:90%;padding:28px;background:var(--bg-secondary);animation:fadeSlideUp 0.25s ease-out both;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+                <div class="spinner active"
+                    style="width:20px;height:20px;border-width:2px;border-color:rgba(79,70,229,0.2);border-top-color:#4f46e5;flex-shrink:0;">
+                </div>
+                <h3 style="margin:0;font-size:1rem;font-weight:700;">Searching & Loading PDFs…</h3>
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px;font-size:0.82rem;">
+                <div style="display:flex;gap:8px;">
+                    <span style="color:var(--text-secondary);min-width:80px;">SOL:</span>
+                    <span id="prefetch-prog-sol" style="font-weight:600;font-family:monospace;">—</span>
+                </div>
+                <div style="display:flex;gap:8px;">
+                    <span style="color:var(--text-secondary);min-width:80px;">File Type:</span>
+                    <span id="prefetch-prog-type" style="font-weight:600;">—</span>
+                </div>
+                <div style="display:flex;gap:8px;">
+                    <span style="color:var(--text-secondary);min-width:80px;">Progress:</span>
+                    <span id="prefetch-prog-count" style="font-weight:600;">0 / 0</span>
+                </div>
+            </div>
+
+            <div class="progress-bar" style="margin-bottom:8px;">
+                <div class="progress-bar__fill" id="prefetch-prog-fill" style="width:0%;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================================
+         AUTO DETECT — RESULTS MODAL
+         ============================================================ -->
+    <div id="auto-detect-results-modal" class="lightbox" style="z-index:2100;">
+        <div class="config-card"
+            style="max-width:700px;width:95%;padding:28px;background:var(--bg-secondary);animation:fadeSlideUp 0.25s ease-out both;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <h3 style="margin:0;font-size:1.2rem;font-weight:600;">Auto Detect Summary</h3>
+            </div>
+
+            <div style="margin-bottom:16px; font-size:0.95rem;">
+                <p id="ad-results-summary-text" style="margin:0;">Detection complete.</p>
+            </div>
+
+            <details
+                style="margin-bottom:20px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-primary);">
+                <summary
+                    style="padding:10px 14px; cursor:pointer; font-weight:600; font-size:0.9rem; user-select:none; outline:none;">
+                    View Detailed Results
+                </summary>
+                <div id="ad-results-grid"
+                    style="padding:14px; display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px; max-height:300px; overflow-y:auto; border-top:1px solid var(--border-color); font-size:0.85rem;">
+                    <!-- Grid items populated dynamically -->
+                </div>
+            </details>
+
+            <div
+                style="display:flex;gap:8px;justify-content:flex-end;border-top:1px solid var(--border-color);padding-top:16px;">
+                <button id="ad-results-discard-btn" class="btn btn--ghost">Discard</button>
+                <button id="ad-results-apply-btn" class="btn btn--primary">Apply to Workspace</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Local Bundled Libraries (Offline Capable) -->
+    <script src="vendor/split.min.js"></script>
+    <script src="vendor/sortable.min.js"></script>
+
+    <!-- Application Controller -->
+    <script src="app.js"></script>
+
+</body>
+
+</html>

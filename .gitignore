@@ -1,0 +1,30 @@
+# ── BẢO MẬT: Tuyệt đối không commit Service Account Key ──
+config/credentials.json
+
+# ── Môi trường ảo Python ──
+venv/
+env/
+ENV/
+
+# ── Python Cache & Bytecode ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# ── PyInstaller Build Output & Temporary Binaries ──
+build/
+dist/
+
+# ── Third-party Binaries dung lượng lớn (Tesseract OCR) ──
+vendor/tesseract/
+
+# ── IDE / Editor ──
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── File tạm hệ điều hành ──
+Thumbs.db
+Desktop.ini

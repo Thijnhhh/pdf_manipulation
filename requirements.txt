@@ -1,0 +1,17 @@
+bottle==0.13.4
+cryptography==50.0.0
+google-api-python-client==2.198.0
+google-auth==2.56.3
+google-auth-httplib2==0.4.1
+google-auth-oauthlib==1.4.0
+gspread==6.2.1
+httplib2==0.32.0
+packaging==26.3
+pdfminer.six==20260107
+pillow==12.3.0
+psutil==7.2.2
+pyinstaller==6.22.0
+pyinstaller-hooks-contrib==2026.6
+pymupdf==1.28.2
+pytesseract==0.3.13
+pywebview==6.2.1
