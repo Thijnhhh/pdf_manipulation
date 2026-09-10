@@ -756,6 +756,7 @@ class BridgeApi:
                     ocr_flag      = bool(ocr_flag),
                     sol_flags     = sol_flags,
                     job_map       = job_map,
+                    trace_enabled = TRACING_ENABLED,
                 )
 
                 if self._auto_detect_cancel.is_set():

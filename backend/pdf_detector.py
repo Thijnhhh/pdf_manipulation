@@ -32,6 +32,7 @@ import io
 import os
 import sys
 import threading
+import time
 from typing import Callable
 
 # ── Validate SO Flags ────────────────────────────────────────────────────────
@@ -759,6 +760,76 @@ def _detect_pages_all_sols(
     return results, "none"
 
 
+# ── Precision Performance Tracer ─────────────────────────────────────────────
+
+class _AutoDetectTracer:
+    """
+    Precision performance tracer for run_auto_detect_all.
+    Records duration of major phases and individual file operations.
+    Prints real-time log lines and an ASCII summary breakdown table upon completion.
+    """
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled
+        self.t_start = time.perf_counter()
+        self.records: list[dict] = []
+
+    def record(self, phase: str, target: str, t0: float, details: str = "") -> float:
+        duration_ms = (time.perf_counter() - t0) * 1000
+        if self.enabled:
+            self.records.append({
+                "phase": phase,
+                "target": target,
+                "ms": duration_ms,
+                "details": details,
+            })
+            detail_str = f" ({details})" if details else ""
+            print(f"[DETECTOR] >> {phase:<22} | {target:<32} | {duration_ms:>8.1f}ms{detail_str}", flush=True)
+        return duration_ms
+
+    def print_summary(self) -> None:
+        if not self.enabled or not self.records:
+            return
+
+        total_elapsed_ms = (time.perf_counter() - self.t_start) * 1000
+        sum_recorded_ms = sum(r["ms"] for r in self.records) or 1e-6
+
+        line_sep = "=" * 98
+        sub_sep  = "-" * 98
+
+        lines = [
+            "",
+            line_sep,
+            f" [DETECTOR TRACE SUMMARY] Auto Detect Performance Breakdown (Total: {total_elapsed_ms:.1f}ms)",
+            sub_sep,
+            f" {'Phase':<24} | {'Target / Item':<36} | {'Duration':>10} | {'Share':>7} | {'Details'}",
+            sub_sep,
+        ]
+
+        for r in self.records:
+            share_pct = (r["ms"] / total_elapsed_ms) * 100
+            phase_str = (r["phase"][:22] + "..") if len(r["phase"]) > 24 else r["phase"]
+            target_str = (r["target"][:34] + "..") if len(r["target"]) > 36 else r["target"]
+            lines.append(
+                f" {phase_str:<24} | {target_str:<36} | {r['ms']:>8.1f}ms | {share_pct:>6.1f}% | {r['details']}"
+            )
+
+        lines.append(sub_sep)
+        unaccounted_ms = max(0.0, total_elapsed_ms - sum_recorded_ms)
+        if unaccounted_ms > 5.0:
+            unacc_pct = (unaccounted_ms / total_elapsed_ms) * 100
+            lines.append(
+                f" {'Other / Overhead':<24} | {'Python dispatch, locks & memory':<36} | {unaccounted_ms:>8.1f}ms | {unacc_pct:>6.1f}% |"
+            )
+            lines.append(sub_sep)
+
+        lines.append(
+            f" {'TOTAL':<24} | {f'{len(self.records)} operations recorded':<36} | {total_elapsed_ms:>8.1f}ms | 100.0% |"
+        )
+        lines.append(line_sep)
+        lines.append("")
+        print("\n".join(lines), flush=True)
+
+
 # ── Top-level runner ──────────────────────────────────────────────────────────
 
 def run_auto_detect_all(
@@ -772,6 +843,7 @@ def run_auto_detect_all(
     ocr_flag: bool = False,
     sol_flags: dict = None,
     job_map: dict = None,
+    trace_enabled: bool = False,
 ):
     """
     Main entry point called from bridge.py in a background thread.
@@ -801,6 +873,7 @@ def run_auto_detect_all(
         ocr_flag:    If True, OCR Mode is used for Flag=False SOLs in SOview.
         sol_flags:   { sol: bool } — from validate_so_flags(); None → all False (PFL).
         job_map:     { sol: job_code } — for RFID HT layout matching; None → PFL mode.
+        trace_enabled: If True, detailed performance tracing is printed to stdout.
 
     Returns:
         {
@@ -810,6 +883,8 @@ def run_auto_detect_all(
     """
     from backend.file_resolver import parse_so, find_all_pdfs_batch
     import pymupdf as fitz
+
+    tracer = _AutoDetectTracer(enabled=trace_enabled)
 
     if sol_flags is None:
         sol_flags = {}
@@ -857,6 +932,7 @@ def run_auto_detect_all(
                 "totalFiles": 0,
             })
 
+        t_search = time.perf_counter()
         try:
             if type_id == "layout" and job_map:
                 # RFID HT: Layout files in network folder are searched by Job number
@@ -866,16 +942,33 @@ def run_auto_detect_all(
                     unique_jobs,
                     is_drive_map.get(type_id, False)
                 )
+                search_desc = f"{len(unique_jobs)} unique Jobs"
             else:
                 batched_files[type_id] = find_all_pdfs_batch(
                     folder_inputs[type_id],
                     unique_sos,
                     is_drive_map.get(type_id, False)
                 )
+                search_desc = f"{len(unique_sos)} unique SOs"
+
+            found_cnt = sum(len([f for f in flist if f.get("found")]) for flist in batched_files[type_id].values())
+            loc_label = "Drive" if is_drive_map.get(type_id, False) else "UNC/Local"
+            tracer.record(
+                phase="1. Batch Search",
+                target=f"{type_id} ({loc_label})",
+                t0=t_search,
+                details=f"{search_desc}, {found_cnt} files found"
+            )
         except Exception as exc:
             for sol in clean_sol_list:
                 errors.append({"sol": sol, "typeId": type_id, "error": str(exc)})
             batched_files[type_id] = {}
+            tracer.record(
+                phase="1. Batch Search",
+                target=f"{type_id} (ERROR)",
+                t0=t_search,
+                details=str(exc)
+            )
 
     # ── Step 3: Initialise assembly type-slots ────────────────────────────────
     for so, sols_for_so in so_to_sols.items():
@@ -899,6 +992,7 @@ def run_auto_detect_all(
 
                 found_for_sol = [f for f in layout_files_all.get(job_code, []) if f.get("found")]
                 for file_idx, file_result in enumerate(found_for_sol):
+                    t_layout_file = time.perf_counter()
                     file_name  = file_result.get("name", "")
                     pdf_source = file_result.get("bytes") or file_result.get("path")
                     if not pdf_source:
@@ -930,6 +1024,13 @@ def run_auto_detect_all(
                             })
                             seen.add((file_idx, p))
                     assembly[sol]["layout"].sort(key=lambda e: (e["fileIdx"], e["pageIndex"]))
+
+                    tracer.record(
+                        phase="2. Extract Layout (RFID)",
+                        target=file_name,
+                        t0=t_layout_file,
+                        details=f"Job {job_code}, {total_pages} pages, direct"
+                    )
             continue
 
         # ── Case B: Standard Priority-Chained Detection (SOview, PFL Layout) ──
@@ -996,6 +1097,7 @@ def run_auto_detect_all(
                     completed_unique += 1
                     continue
 
+            t_file = time.perf_counter()
             try:
                 page_map, method_used = _detect_pages_all_sols(
                     pdf_source     = pdf_source,
@@ -1008,10 +1110,12 @@ def run_auto_detect_all(
                     sol_flags      = sol_flags,
                 )
                 # Merge pages into assembly — use local_idx for this SO
+                total_pages_matched = 0
                 for sol in all_sols:
                     so = parse_so(sol)
                     local_idx = uf["so_to_local_idx"].get(so, 0)
                     pages = page_map.get(sol, [])
+                    total_pages_matched += len(pages)
                     file_path = file_result.get("path") or ""
                     file_id   = file_result.get("file_id") or file_path or file_name
 
@@ -1029,14 +1133,29 @@ def run_auto_detect_all(
                             seen.add((local_idx, p))
                     assembly[sol][type_id].sort(key=lambda e: (e["fileIdx"], e["pageIndex"]))
 
+                tracer.record(
+                    phase=f"2. Scan {type_id}",
+                    target=file_name,
+                    t0=t_file,
+                    details=f"file {completed_unique + 1}/{total_unique}, method={method_used}, {total_pages_matched} pgs ({len(all_sols)} SOLs)"
+                )
+
             except Exception as exc:
                 for sol in all_sols:
                     errors.append({"sol": sol, "typeId": type_id, "error": str(exc)})
+                tracer.record(
+                    phase=f"2. Scan {type_id} (ERROR)",
+                    target=file_name,
+                    t0=t_file,
+                    details=str(exc)
+                )
 
             completed_unique += 1
 
         # ── Post-process layout priority sort (PFL: multi-file front/layout) ──
         if type_id == "layout":
+            t_sort = time.perf_counter()
+            sorted_count = 0
             for sol, types_dict in assembly.items():
                 if "layout" not in types_dict or not types_dict["layout"]:
                     continue
@@ -1045,6 +1164,7 @@ def run_auto_detect_all(
                 unique_fidxs = set(e["fileIdx"] for e in layout_items)
 
                 if len(unique_fidxs) >= 2:
+                    sorted_count += 1
                     so = parse_so(sol)
                     priority_dict: dict = {}
 
@@ -1105,9 +1225,26 @@ def run_auto_detect_all(
                     else:
                         layout_items.sort(key=lambda e: (priority_dict.get(e["fileIdx"], 0), e["fileIdx"], e["pageIndex"]))
 
-    # ── Step 5: Extract matched pages into AUTO_DETECT_RAM_CACHE ─────────────
-    _extract_to_ram(assembly, batched_files, pdf_type_ids, job_map=job_map)
+            if sorted_count > 0:
+                tracer.record(
+                    phase="3. Layout Priority Sort",
+                    target="PFL Layout",
+                    t0=t_sort,
+                    details=f"{sorted_count} SOLs evaluated for keywords/A4 geometry"
+                )
 
+    # ── Step 5: Extract matched pages into AUTO_DETECT_RAM_CACHE ─────────────
+    t_ram = time.perf_counter()
+    _extract_to_ram(assembly, batched_files, pdf_type_ids, job_map=job_map)
+    cached_count = len(AUTO_DETECT_RAM_CACHE)
+    tracer.record(
+        phase="4. RAM Extraction",
+        target="AUTO_DETECT_RAM_CACHE",
+        t0=t_ram,
+        details=f"{cached_count} sub-documents serialized in RAM"
+    )
+
+    tracer.print_summary()
     return {"assembly": assembly, "errors": errors}
 
 
