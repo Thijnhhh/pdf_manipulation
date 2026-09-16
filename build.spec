@@ -24,6 +24,18 @@ pyzbar_binaries = [
     if os.path.isfile(os.path.join(pyzbar_dir, f))
 ]
 
+# Collect metadata and submodules for BigQuery & Google Cloud dependencies
+from PyInstaller.utils.hooks import collect_submodules, copy_metadata
+
+bigquery_datas = []
+for pkg in ['google-cloud-bigquery', 'google-cloud-core', 'google-api-core']:
+    try:
+        bigquery_datas += copy_metadata(pkg)
+    except Exception:
+        pass
+
+bigquery_hidden = collect_submodules('google.cloud.bigquery')
+
 block_cipher = None
 
 a = Analysis(
@@ -35,7 +47,7 @@ a = Analysis(
         ('assets',  'assets'),
         ('config',  'config'),
         ('vendor/tesseract', 'vendor/tesseract'),
-    ],
+    ] + bigquery_datas,
     hiddenimports=[
         # PyMuPDF (new package name in v1.24+)
         'pymupdf',
@@ -58,6 +70,7 @@ a = Analysis(
         'backend.pdf_detector',
         'backend.pdf_deduplicator',
         'backend.pdf_combiner',
+        'backend.trim_service',
         'pyzbar',
         'pyzbar.pyzbar',
         'pdfminer',
@@ -66,13 +79,14 @@ a = Analysis(
         'pytesseract',
         'PIL',
         'PIL.Image',
-    ],
+    ] + bigquery_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
         # Exclude heavy unused packages to keep .exe size down
-        'matplotlib', 'numpy', 'pandas', 'PyQt5', 'tkinter', 'pdf2image',
+        'matplotlib', 'numpy', 'pandas', 'PyQt5', 'PySide2', 'PySide6',
+        'tkinter', 'pdf2image', 'torch', 'torchvision', 'scipy', 'cv2', 'IPython',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

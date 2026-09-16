@@ -29,11 +29,11 @@ Backward compatibility:
 
 from __future__ import annotations
 
+import concurrent.futures
 import io
 import os
 import re
 import sys
-from pathlib import Path
 
 # Google API — only imported when Drive mode is needed
 from googleapiclient.discovery import build  # type: ignore
@@ -41,7 +41,7 @@ from googleapiclient.http import MediaIoBaseDownload  # type: ignore
 from google.oauth2.service_account import Credentials
 
 import atexit
-import concurrent.futures
+import queue
 import tempfile
 import threading
 import time
@@ -202,43 +202,116 @@ def extract_folder_id(url_or_id: str) -> "str | None":
 
 
 # ── Public API ───────────────────────────────────────────────
-def find_all_pdfs_local_batch(folder_path: str, so_codes: list, match_prefix_8: bool = False) -> dict:
+def find_all_pdfs_local_batch(
+    folder_path: str,
+    so_codes: list,
+    match_prefix_8: bool = False,
+    sort_by_mtime_desc: bool = False,
+) -> dict:
     """
     Search a local/network directory for ALL PDFs matching any of the so_codes.
+    Uses multi-threaded concurrent directory crawler (ThreadPool/Queue) to maximize throughput
+    over high-latency SMB network shares while preventing blocking single-threaded traversal.
     If match_prefix_8 is True, matches filename's first 8 characters exactly with the job code.
+    If sort_by_mtime_desc is True, results for each code are sorted by file modification time
+    (newest first) — used by Trim Adidas TE folder scanning.
+    Otherwise (default), results are sorted alphabetically by filename.
     Returns: { so_code: [ {found, file_id, path, name}, ... ] }
     """
     clean_so_codes = list(dict.fromkeys(so.strip() for so in so_codes if so and isinstance(so, str) and so.strip()))
-    base = Path(folder_path)
-    if not base.exists() or not base.is_dir():
+    if not clean_so_codes:
+        return {}
+
+    folder_str = str(folder_path).strip()
+    if not os.path.exists(folder_str) or not os.path.isdir(folder_str):
         return {so: [{"found": False, "error": f"Folder not found: {folder_path}"}] for so in clean_so_codes}
 
     results = {so: [] for so in clean_so_codes}
+    results_lock = threading.Lock()
 
     if match_prefix_8:
-        # RFID HT Layout: cut exactly the first 8 chars of filename and compare with job code
         lower_job_map = {str(j).strip()[:8].lower(): str(j).strip() for j in clean_so_codes if str(j).strip()}
-        for f in base.rglob("*.pdf"):
-            prefix = f.name[:8].lower()
-            if prefix in lower_job_map:
-                original_so = lower_job_map[prefix]
-                f_path = str(f)
-                item = {"found": True, "file_id": f_path, "path": f_path, "name": f.name}
-                _RESOLVED_FILES_CACHE[f_path] = item
-                results[original_so].append(item)
     else:
         lower_so_map = {so.lower(): so for so in clean_so_codes}
-        for f in base.rglob("*.pdf"):
-            name_lower = f.name.lower()
-            for so_lower, original_so in lower_so_map.items():
-                if so_lower in name_lower:
-                    f_path = str(f)
-                    item = {"found": True, "file_id": f_path, "path": f_path, "name": f.name}
-                    _RESOLVED_FILES_CACHE[f_path] = item
-                    results[original_so].append(item)
+
+    dirs_queue: queue.Queue[str] = queue.Queue()
+    dirs_queue.put(folder_str)
+
+    active_workers = 0
+    workers_lock = threading.Lock()
+    done_event = threading.Event()
+
+    def worker():
+        nonlocal active_workers
+        while not done_event.is_set():
+            try:
+                curr_dir = dirs_queue.get(timeout=0.04)
+            except queue.Empty:
+                with workers_lock:
+                    if active_workers == 0 and dirs_queue.empty():
+                        done_event.set()
+                        return
+                continue
+
+            with workers_lock:
+                active_workers += 1
+
+            try:
+                subdirs = []
+                with os.scandir(curr_dir) as it:
+                    for entry in it:
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                subdirs.append(entry.path)
+                            elif entry.is_file(follow_symlinks=False) and entry.name.lower().endswith(".pdf"):
+                                f_name = entry.name
+                                if match_prefix_8:
+                                    prefix = f_name[:8].lower()
+                                    if prefix in lower_job_map:
+                                        orig_so = lower_job_map[prefix]
+                                        f_path = entry.path
+                                        item = {"found": True, "file_id": f_path, "path": f_path, "name": f_name}
+                                        with results_lock:
+                                            _RESOLVED_FILES_CACHE[f_path] = item
+                                            results[orig_so].append(item)
+                                else:
+                                    name_lower = f_name.lower()
+                                    for so_lower, orig_so in lower_so_map.items():
+                                        if so_lower in name_lower:
+                                            f_path = entry.path
+                                            item = {"found": True, "file_id": f_path, "path": f_path, "name": f_name}
+                                            with results_lock:
+                                                _RESOLVED_FILES_CACHE[f_path] = item
+                                                results[orig_so].append(item)
+                        except OSError:
+                            pass
+
+                for sd in subdirs:
+                    dirs_queue.put(sd)
+            except OSError:
+                pass
+            finally:
+                dirs_queue.task_done()
+                with workers_lock:
+                    active_workers -= 1
+                    if active_workers == 0 and dirs_queue.empty():
+                        done_event.set()
+
+    max_workers = 32
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(max_workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
     for so in results:
-        results[so].sort(key=lambda x: x.get("name", "").lower())
+        if sort_by_mtime_desc:
+            results[so].sort(
+                key=lambda x: os.path.getmtime(x["path"]) if x.get("path") and os.path.exists(x["path"]) else 0,
+                reverse=True,
+            )
+        else:
+            results[so].sort(key=lambda x: x.get("name", "").lower())
 
     return results
 
@@ -406,14 +479,26 @@ def find_all_pdfs_drive_batch(folder_url: str, so_codes: list, match_prefix_8: b
 
 
 
-def find_all_pdfs_batch(folder_input: str, so_codes: list, is_drive: bool, match_prefix_8: bool = False) -> dict:
+def find_all_pdfs_batch(
+    folder_input: str,
+    so_codes: list,
+    is_drive: bool,
+    match_prefix_8: bool = False,
+    sort_by_mtime_desc: bool = False,
+) -> dict:
     """
     Unified batch entry point.
+    sort_by_mtime_desc is forwarded to the local implementation only;
+    Drive mode always uses name-based sorting.
     """
     if is_drive:
         return find_all_pdfs_drive_batch(folder_input, so_codes, match_prefix_8=match_prefix_8)
     else:
-        return find_all_pdfs_local_batch(folder_input, so_codes, match_prefix_8=match_prefix_8)
+        return find_all_pdfs_local_batch(
+            folder_input, so_codes,
+            match_prefix_8=match_prefix_8,
+            sort_by_mtime_desc=sort_by_mtime_desc,
+        )
 
 
 

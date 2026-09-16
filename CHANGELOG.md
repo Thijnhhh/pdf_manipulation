@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 
 
+## [1.2.0] - 2026-09-16
+### Added
+- **New Module: Trim Adidas:** Automated pipeline for Adidas trims integrating Google BigQuery to retrieve TE codes, locate SOview PDFs via flexible naming patterns (`SO.pdf`, `SO-line.pdf`, `SO-*-*.pdf`), detect `*TE*` barcodes, match layout files directly by TE code, and merge outputs.
+- **New Module: PDF Merger (PFL Thermal):** Added dedicated workflow, presets, and UI tab for PFL Thermal production lines.
+- **1D Barcode Detection & Upside-Down Fallback:** Upgraded SOview barcode detector to exclusively recognize 1D barcodes while filtering out 2D barcodes (QR codes, DataMatrix, PDF417). Introduced an automatic bottom-25% fallback mechanism to accurately detect 180° inverted/upside-down scanned pages with zero rotation overhead.
+- **Dynamic Composite SOL Parser:** Implemented `_extract_sols_from_text` supporting dash ranges (`146842454-1-4`), comma/semicolon-separated discrete lines (`146842454-1, 2, 3; 4`), and automatic stripping of attached measurement units (e.g. `146842454-1-61mm`).
+- **Fast Batch Local Search:** Added high-performance directory scanner (`find_all_pdfs_local_batch`) leveraging `os.scandir` to index local directories with tens of thousands of PDFs in under 1 second.
+- **BigQuery PyInstaller Packaging:** Enhanced `build.spec` with `collect_submodules('google.cloud.bigquery')` and runtime package metadata extraction (`copy_metadata`) to ensure standalone executable compatibility without missing distribution metadata.
+
+### Changed
+- **Resolved KeyError in SOL Detection:** Replaced raw list iterations with sanitized `clean_sol_list` in `_detect_pages_all_sols`, preventing runtime crashes caused by leading/trailing whitespace.
+- **Backend Clean-up & Optimization:** Removed redundant imports, unused modules, and duplicate declarations across `pdf_detector.py`, `file_resolver.py`, `pdf_processor.py`, `sheets_service.py`, `trim_service.py`, and `updater.py`.
+- **Synchronized Technical Documentation:** Updated `Documents.md` to v1.2.0 incorporating BigQuery architecture, updated system diagrams, and configuration workflows for all 4 production lines.
+
 ## [1.1.0] - 2026-09-10
 ### Added
 - **New Module: PDF Merger (RFID HT):** Dedicated module tailored for the RFID Heat Transfer manufacturing line.

@@ -338,31 +338,52 @@
 
     function enterMergerModule(line = 'PFL') {
         state.currentLine = line;
-        const isRfid = line === 'RFID HT';
+        const isRfid        = line === 'RFID HT';
+        const isTrim        = line === 'Trim';
+        const isPflThermal  = line === 'PFL THERMAL';
+        // Modules that never use Google Drive (UNC/local only)
+        const isUncOnly     = isRfid || isTrim || isPflThermal;
 
-        if (dom.mergerToolbarTitle) {
-            dom.mergerToolbarTitle.textContent = isRfid ? 'PDF Merger (RFID HT)' : 'PDF Merger (PFL)';
-        }
-        if (dom.mergerToolbarIcon) {
-            dom.mergerToolbarIcon.textContent = isRfid ? '🏷️' : '📑';
-        }
-        if (dom.mergerModuleSubtitle) {
-            dom.mergerModuleSubtitle.textContent = isRfid ? 'RFID HT' : 'PFL';
-        }
+        // ── Toolbar ──────────────────────────────────────────────
+        const titles = {
+            'PFL':         'PDF Merger (PFL)',
+            'RFID HT':    'PDF Merger (RFID HT)',
+            'Trim':       'Trim Adidas',
+            'PFL THERMAL':'PDF Merger (PFL Thermal)',
+        };
+        const icons  = {
+            'PFL':         '📑',
+            'RFID HT':    '🏷️',
+            'Trim':       '✂️',
+            'PFL THERMAL':'🌡️',
+        };
+        if (dom.mergerToolbarTitle)  dom.mergerToolbarTitle.textContent  = titles[line] || line;
+        if (dom.mergerToolbarIcon)   dom.mergerToolbarIcon.textContent   = icons[line]  || '📄';
+        if (dom.mergerModuleSubtitle) dom.mergerModuleSubtitle.textContent = line;
 
-        // Show/hide manual SOL entry source
+        // ── Folder label rename for Trim (Layout → TE Folder) ───
+        pdfTypes.forEach(t => {
+            const lbl = document.querySelector(`label[for='folder-${t.id}']`);
+            if (!lbl) return;
+            if (isTrim && t.id === 'layout') {
+                lbl.textContent = 'TE Folder';
+            } else {
+                lbl.textContent = t.label + ' Folder';
+            }
+        });
+
+        // ── Manual SOL input visibility ──────────────────────────
         if (dom.solEntrySourceGroup) {
+            // Only hide manual entry for RFID HT
             dom.solEntrySourceGroup.style.display = isRfid ? 'none' : '';
         }
-        if (isRfid) {
-            onInputModeTabSwitch('sheets');
-        }
+        if (isRfid) onInputModeTabSwitch('sheets');
 
-        // Hide or show drive toggles (both folders in RFID HT are UNC network paths)
+        // ── Drive toggles (hidden for UNC-only modules) ──────────
         document.querySelectorAll('.drive-toggle').forEach(el => {
-            el.style.display = isRfid ? 'none' : '';
+            el.style.display = isUncOnly ? 'none' : '';
         });
-        if (isRfid) {
+        if (isUncOnly) {
             pdfTypes.forEach(t => {
                 const cb = document.getElementById(`is-drive-${t.id}`);
                 if (cb) {
@@ -370,7 +391,13 @@
                     const lbl = document.getElementById(`drive-toggle-${t.id}`);
                     if (lbl) lbl.classList.remove('active');
                 }
+                state.isDrive[t.id] = false;
             });
+        }
+
+        // ── Fetch button visibility (Trim Adidas hides it) ───────
+        if (dom.btnFetch) {
+            dom.btnFetch.style.display = isTrim ? 'none' : '';
         }
 
         showScreen('input-screen');
@@ -1786,6 +1813,14 @@
     // ── Open / Close Modal ─────────────────────────────────────────────────────
 
     function openAutoDetectModal() {
+        const isTrim = state.currentLine === 'Trim';
+
+        // Trim Adidas: skip the config modal entirely — call backend directly
+        if (isTrim) {
+            _startTrimAutoDetect();
+            return;
+        }
+
         // Ensure solList is deduplicated for exception rows
         if (state.inputMode === 'manual') {
             state.solList = parseManualSolCodes();
@@ -1799,8 +1834,64 @@
         setOcrMode(false);
         // Rebuild grid with defaults
         buildConfigGrid();
+
+        // PFL Thermal: hide the OCR toggle in the modal
+        const isPflThermal = state.currentLine === 'PFL THERMAL';
+        if (dom.adOcrToggleBtn) dom.adOcrToggleBtn.style.display = isPflThermal ? 'none' : '';
+        if (dom.adOcrDesc)      dom.adOcrDesc.style.display      = isPflThermal ? 'none' : '';
+
         // Show modal
         dom.adModal.classList.add('active');
+    }
+
+    // Trim Adidas: directly launch backend pipeline (no config modal)
+    function _startTrimAutoDetect() {
+        const solList = state.inputMode === 'manual'
+            ? parseManualSolCodes()
+            : Array.from(new Set((state.solList || []).map(s => String(s).trim()).filter(s => s.length > 0)));
+
+        if (!solList.length) {
+            showToast('No SOL codes available. Please select a preset or enter SOLs first.', 'error');
+            return;
+        }
+        state.solList = solList;
+
+        // Collect folder inputs
+        pdfTypes.forEach(t => {
+            const inp = document.getElementById(`folder-${t.id}`);
+            state.folderInputs[t.id] = inp ? inp.value.trim() : '';
+            state.isDrive[t.id] = false;  // Trim always local/UNC
+        });
+        state.outputPath = dom.outputFolderInput ? dom.outputFolderInput.value.trim() : '';
+
+        const hasFolders = pdfTypes.every(t => state.folderInputs[t.id] && state.folderInputs[t.id].length > 0);
+        if (!hasFolders) {
+            showToast('Please enter folder paths for SOview and TE folders first.', 'error');
+            return;
+        }
+
+        // Show progress modal with checklist
+        dom.adProgressModal.classList.add('active');
+        adState.progressLog = [];
+        if (dom.adProgFill) dom.adProgFill.style.width = '0%';
+        const solListEl = document.getElementById('ad-sol-list');
+        if (solListEl) {
+            solListEl.innerHTML = '';
+            solList.forEach(sol => {
+                const li = document.createElement('li');
+                li.id = `ad-li-${sol}`;
+                li.style.cssText = 'padding:8px 12px;border-bottom:1px solid var(--border-color);display:flex;align-items:center;gap:10px;';
+                li.innerHTML = `<span class="icon" style="color:var(--text-secondary);width:16px;">⏳</span> <span style="font-weight:600;font-family:monospace;">${sol}</span>`;
+                solListEl.appendChild(li);
+            });
+        }
+        window._adActiveSol = null;
+
+        window.pywebview.api.run_auto_detect_trim(
+            JSON.stringify(solList),
+            JSON.stringify(state.folderInputs),
+            state.outputPath
+        );
     }
 
     function closeAutoDetectModal() {
@@ -1883,6 +1974,12 @@
             });
             flagsJson = JSON.stringify(flagsMap);
             jobMapJson = JSON.stringify(jobMap);
+        } else if (state.currentLine === 'PFL THERMAL') {
+            // PFL Thermal: treat all SOLs as Flag=True (Barcode Range Scan)
+            const flagsMap = {};
+            solList.forEach(sol => { flagsMap[sol] = true; });
+            flagsJson  = JSON.stringify(flagsMap);
+            jobMapJson = "{}";
         }
 
         window.pywebview.api.run_auto_detect(
@@ -1948,13 +2045,109 @@
             }
         }
 
-        const resModal = document.getElementById('auto-detect-results-modal');
+        const resModal    = document.getElementById('auto-detect-results-modal');
         const summaryText = document.getElementById('ad-results-summary-text');
-        const grid = document.getElementById('ad-results-grid');
+        const grid        = document.getElementById('ad-results-grid');
 
         // Store globally so the apply button can access it
         window._adFinalResult = result;
 
+        // ── Trim Adidas: rich BQ summary ─────────────────────────
+        if (state.currentLine === 'Trim') {
+            const bqMeta    = result.bq_metadata   || {};
+            const missingD  = result.missing_data  || {};
+            const missingOI = missingD.missing_ordered_item || [];
+            const missingTE = missingD.missing_te           || [];
+            const allMissing = Array.from(new Set([...missingOI, ...missingTE]));
+
+            // Warning banner for SOLs with missing BQ data
+            let warnHtml = '';
+            if (allMissing.length > 0) {
+                warnHtml = `
+                  <div style="background:rgba(255,180,0,0.12);border:1px solid var(--accent-warning,#f59e0b);
+                              border-radius:6px;padding:10px 14px;margin-bottom:12px;">
+                    <div style="font-weight:700;color:var(--accent-warning,#f59e0b);margin-bottom:4px;">⚠️ Missing BigQuery Data</div>
+                    ${missingOI.length ? `<div style="font-size:0.82rem;margin-bottom:2px;"><b>Missing Ordered Item:</b> ${missingOI.map(s=>`<code style="font-family:monospace;">${escHtml(s)}</code>`).join(', ')}</div>` : ''}
+                    ${missingTE.length  ? `<div style="font-size:0.82rem;"><b>Missing TE list:</b> ${missingTE.map(s=>`<code style="font-family:monospace;">${escHtml(s)}</code>`).join(', ')}</div>` : ''}
+                  </div>`;
+            }
+            if (result.bq_error) {
+                warnHtml += `<div style="background:rgba(239,68,68,0.1);border:1px solid var(--accent-danger,#ef4444);
+                                          border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:0.82rem;color:var(--accent-danger,#ef4444);">
+                    ⚠️ BigQuery error: ${escHtml(result.bq_error)}</div>`;
+            }
+
+            // Build detail table for each SOL
+            const solList = Object.keys(result.assembly || {});
+            let tableRows = solList.map(sol => {
+                const meta   = bqMeta[sol]  || {};
+                const svPages = meta.soview_pages || 0;
+                const tePages = meta.te_pages     || 0;
+                const totalP  = svPages + tePages;
+                const targetTE = (meta.list_te || []).length;
+                const svFile  = meta.soview_file || '—';
+                const svPath  = meta.soview_path || '';
+                const teFile  = meta.te_file     || '—';
+                const tePath  = meta.te_path     || '';
+                const hasPages = totalP > 0;
+                const previewBtn = hasPages
+                    ? `<button class="btn btn--sm btn--secondary ad-preview-btn" data-sol="${escHtml(sol)}"
+                              style="font-size:0.75rem;padding:4px 10px;">👁 Preview</button>`
+                    : `<span style="color:var(--text-tertiary);font-size:0.75rem;">—</span>`;
+                return `
+                  <tr style="${totalP===0?'opacity:0.5;':''}">
+                    <td style="padding:8px 10px;font-weight:600;font-family:monospace;font-size:0.82rem;">${escHtml(sol)}</td>
+                    <td style="padding:8px 10px;text-align:center;">
+                      ${svPages>0 ? `<span style="color:var(--accent-success);font-weight:600;">${svPages}</span>` : '<span style="color:var(--text-tertiary);">0</span>'}
+                      <br><span title="${escHtml(svPath)}" style="font-size:0.72rem;color:var(--text-secondary);cursor:default;" title="${escHtml(svPath)}">${escHtml(svFile)}</span>
+                    </td>
+                    <td style="padding:8px 10px;text-align:center;">
+                      ${tePages>0 ? `<span style="color:var(--accent-success);font-weight:600;">${tePages}</span>` : '<span style="color:var(--text-tertiary);">0</span>'}
+                      <br><span style="font-size:0.72rem;color:var(--text-secondary);cursor:default;" title="${escHtml(tePath)}">${escHtml(teFile)}</span>
+                    </td>
+                    <td style="padding:8px 10px;text-align:center;font-weight:600;">${targetTE||'—'}</td>
+                    <td style="padding:8px 10px;text-align:center;font-weight:700;">${totalP}</td>
+                    <td style="padding:8px 10px;text-align:center;">${previewBtn}</td>
+                  </tr>`;
+            }).join('');
+
+            grid.innerHTML = `
+              ${warnHtml}
+              <table style="width:100%;border-collapse:collapse;font-size:0.83rem;">
+                <thead>
+                  <tr style="background:var(--bg-tertiary);">
+                    <th style="padding:8px 10px;text-align:left;">SOL Code</th>
+                    <th style="padding:8px 10px;text-align:center;">SOview Pages &amp; File</th>
+                    <th style="padding:8px 10px;text-align:center;">TE Pages &amp; File</th>
+                    <th style="padding:8px 10px;text-align:center;">Target TEs (BQ)</th>
+                    <th style="padding:8px 10px;text-align:center;">Total Pages</th>
+                    <th style="padding:8px 10px;text-align:center;">Preview</th>
+                  </tr>
+                </thead>
+                <tbody>${tableRows}</tbody>
+              </table>`;
+
+            const foundCount = solList.filter(s => {
+                const m = bqMeta[s] || {};
+                return (m.soview_pages || 0) + (m.te_pages || 0) > 0;
+            }).length;
+            summaryText.innerHTML = `Trim Adidas detection complete. Found pages for <strong>${foundCount} / ${solList.length}</strong> SOLs.`;
+
+            if (result.errors && result.errors.length > 0) {
+                const errMsgs = result.errors.map(e => `${e.sol} (${e.typeId}): ${e.error}`).join('; ');
+                showToast('⚠️ Scan issues: ' + errMsgs, 'warning', 6000);
+            }
+
+            resModal.classList.add('active');
+            // Wire preview buttons inside the new table
+            grid.querySelectorAll('.ad-preview-btn').forEach(btn => {
+                btn.addEventListener('click', () => openPreviewModal(btn.dataset.sol));
+            });
+            return;
+        }
+        // ── End Trim Adidas branch ────────────────────────────────
+
+        // Standard PFL / RFID HT / PFL Thermal results display
         let foundCount = 0;
         grid.innerHTML = '';
 
@@ -2375,6 +2568,18 @@
         if (cardMergerRfid) {
             cardMergerRfid.addEventListener('click', () => {
                 enterMergerModule('RFID HT');
+            });
+        }
+        const cardTrim = document.getElementById('card-merger-trim');
+        if (cardTrim) {
+            cardTrim.addEventListener('click', () => {
+                enterMergerModule('Trim');
+            });
+        }
+        const cardPflThermal = document.getElementById('card-merger-pfl-thermal');
+        if (cardPflThermal) {
+            cardPflThermal.addEventListener('click', () => {
+                enterMergerModule('PFL THERMAL');
             });
         }
         document.getElementById('card-deduplicate').addEventListener('click', () => {

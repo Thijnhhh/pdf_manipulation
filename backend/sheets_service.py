@@ -11,7 +11,6 @@ executable so it works both in dev and in a PyInstaller bundle.
 ─────────────────────────────────────────────────────────────
 """
 
-import json
 import os
 import sys
 import time

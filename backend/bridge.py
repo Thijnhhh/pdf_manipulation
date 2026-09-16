@@ -784,6 +784,434 @@ class BridgeApi:
         """Signal the running Auto Detect to stop after its current page."""
         self._auto_detect_cancel.set()
 
+    # ── 5b. Trim Adidas Auto Detect ──────────────────────────
+
+    @_trace
+    def run_auto_detect_trim(
+        self,
+        sol_list_json:      str,
+        folder_inputs_json: str,
+        output_path:        str,
+    ) -> None:
+        """
+        Async: Trim Adidas detection pipeline.
+
+        Stages:
+          1. BigQuery CALL get_TE → ORDERED_ITEM + list_TE per SOL.
+          2. Validate BQ data → report missing_ordered_item / missing_te.
+          3. Scan SOview folder (all SOLs, even missing BQ) using 3-pattern fitz.
+          4. Scan TE folder (only SOLs with valid BQ data) using barcode text scan;
+             files sorted newest-first by mtime.
+          5. Write sub-docs to AUTO_DETECT_RAM_CACHE.
+          6. Push _onAutoDetectDone with { success, assembly, errors,
+                                           bq_metadata, missing_data }.
+
+        folder_inputs_json: JSON { "soview": "<path>", "layout": "<path>" }
+          (frontend uses "layout" key for the TE folder to reuse existing UI).
+        """
+        self._auto_detect_cancel.clear()
+
+        def _task():
+            try:
+                from backend.trim_service import (
+                    fetch_bigquery_te,
+                    validate_data_bigquery,
+                    scan_soview_pdf_3patterns,
+                    scan_te_pdf_barcode,
+                )
+                from backend.file_resolver import (
+                    find_all_pdfs_local_batch,
+                    parse_so,
+                )
+                from backend.pdf_detector import (
+                    AUTO_DETECT_RAM_CACHE,
+                    clear_ram_cache,
+                    AutoDetectTracer,
+                )
+                import pymupdf as fitz
+
+                raw_sol_list   = json.loads(sol_list_json)
+                sol_list       = list(dict.fromkeys(
+                    s.strip() for s in raw_sol_list
+                    if s and isinstance(s, str) and s.strip()
+                ))
+                folder_inputs  = json.loads(folder_inputs_json)
+                soview_folder  = folder_inputs.get("soview", "")
+                te_folder      = folder_inputs.get("layout", "")   # UI sends 2nd folder as "layout"
+
+                tracer = AutoDetectTracer(
+                    enabled=TRACING_ENABLED,
+                    title="Trim Adidas Auto Detect Performance Breakdown",
+                    prefix="TRIM",
+                )
+
+                def _progress(payload: dict):
+                    p = _json_str(payload)
+                    self._eval(f"window._onAutoDetectProgress({p})")
+
+                _progress({"sol": "Batch Search", "typeId": "bigquery",
+                           "method": "Fetching BigQuery data…",
+                           "fileName": "", "currentFile": 0, "totalFiles": 0})
+
+                # ── Stage 1: BigQuery ────────────────────────────────────
+                pairs: list[tuple[int, int]] = []
+                for sol in sol_list:
+                    so = parse_so(sol)
+                    if so:
+                        line_part = sol.split("-", 1)[1] if "-" in sol else "1"
+                        try:
+                            pairs.append((int(so), int(line_part)))
+                        except ValueError:
+                            pass
+
+                t_bq = time.perf_counter()
+                bq_records: list[dict] = []
+                bq_error: str = ""
+                try:
+                    bq_records = fetch_bigquery_te(pairs)
+                    tracer.record(
+                        phase="1. BigQuery Fetch",
+                        target="Stored Procedure get_TE",
+                        t0=t_bq,
+                        details=f"{len(pairs)} pairs sent, {len(bq_records)} rows returned",
+                    )
+                except Exception as bq_exc:
+                    bq_error = str(bq_exc)
+                    tracer.record(
+                        phase="1. BigQuery Fetch",
+                        target="Stored Procedure get_TE",
+                        t0=t_bq,
+                        details=f"FAILED: {bq_exc}",
+                    )
+                    print(f"[run_auto_detect_trim] BigQuery error: {bq_exc}")
+
+                # ── Stage 2: Validate ────────────────────────────────────
+                t_val = time.perf_counter()
+                sol_metadata, missing_data = validate_data_bigquery(bq_records, sol_list)
+                tracer.record(
+                    phase="2. BQ Validate",
+                    target="validate_data_bigquery",
+                    t0=t_val,
+                    details=f"{len(sol_metadata)} valid, {len(missing_data.get('missing_ordered_item', []))} missing OI, {len(missing_data.get('missing_te', []))} missing TE",
+                )
+
+                # ── Stage 3: SOview batch file find ─────────────────────
+                unique_sos: list[str] = list(dict.fromkeys(
+                    parse_so(sol) for sol in sol_list if parse_so(sol)
+                ))
+
+                _progress({"sol": "Batch Search", "typeId": "soview",
+                           "method": "Scanning SOview folder…",
+                           "fileName": "", "currentFile": 0, "totalFiles": 0})
+
+                t_sv_search = time.perf_counter()
+                soview_files: dict = {}
+                if soview_folder:
+                    soview_files = find_all_pdfs_local_batch(
+                        soview_folder, unique_sos, sort_by_mtime_desc=False
+                    )
+                sv_found = sum(len([f for f in flist if f.get("found")]) for flist in soview_files.values())
+                tracer.record(
+                    phase="3. Batch Search",
+                    target="SOview (UNC/Local)",
+                    t0=t_sv_search,
+                    details=f"{len(unique_sos)} unique SOs, {sv_found} files found",
+                )
+
+                # ── Stage 4: TE batch file find (newest first) ───────────
+                _progress({"sol": "Batch Search", "typeId": "layout",
+                           "method": "Scanning TE folder…",
+                           "fileName": "", "currentFile": 0, "totalFiles": 0})
+
+                # Build ordered_item → file search map
+                ordered_items_needed: list[str] = list(dict.fromkeys(
+                    meta["ordered_item"]
+                    for meta in sol_metadata.values()
+                    if meta.get("ordered_item")
+                ))
+
+                t_te_search = time.perf_counter()
+                te_files: dict = {}
+                if te_folder and ordered_items_needed:
+                    te_files = find_all_pdfs_local_batch(
+                        te_folder, ordered_items_needed, sort_by_mtime_desc=True
+                    )
+                te_found = sum(len([f for f in flist if f.get("found")]) for flist in te_files.values())
+                tracer.record(
+                    phase="4. Batch Search",
+                    target="TE (UNC/Local, Newest)",
+                    t0=t_te_search,
+                    details=f"{len(ordered_items_needed)} unique OIs, {te_found} files found",
+                )
+
+                # ── Stage 5: Detection loop ──────────────────────────────
+                assembly: dict[str, dict] = {sol: {"soview": [], "layout": []} for sol in sol_list}
+                errors:   list[dict]      = []
+
+                # SOview: group SOLs by SO → scan each unique file once
+                so_to_sols: dict[str, list[str]] = {}
+                for sol in sol_list:
+                    so = parse_so(sol)
+                    if so:
+                        so_to_sols.setdefault(so, []).append(sol)
+
+                total_soview_files = sum(
+                    len([f for f in soview_files.get(so, []) if f.get("found")])
+                    for so in so_to_sols
+                )
+                completed_sv = 0
+
+                for so, sols_for_so in so_to_sols.items():
+                    if self._auto_detect_cancel.is_set():
+                        break
+
+                    found_files = [f for f in soview_files.get(so, []) if f.get("found")]
+                    for file_idx, file_entry in enumerate(found_files):
+                        if self._auto_detect_cancel.is_set():
+                            break
+                        file_name = file_entry.get("name", "")
+                        file_path = file_entry.get("path", "")
+                        pdf_source = file_entry.get("path") or file_entry.get("bytes")
+
+                        _progress({"sol": sols_for_so[0] if sols_for_so else "",
+                                   "typeId": "soview",
+                                   "method": "soview_3pattern",
+                                   "fileName": file_name,
+                                   "currentFile": completed_sv + 1,
+                                   "totalFiles": total_soview_files})
+
+                        t_sv_file = time.perf_counter()
+                        try:
+                            page_map = scan_soview_pdf_3patterns(
+                                pdf_source=pdf_source,
+                                target_sols=sols_for_so,
+                                base_so=so,
+                                cancel_event=self._auto_detect_cancel,
+                            )
+                            matched_pages_cnt = 0
+                            for sol, pages in page_map.items():
+                                seen = set((e["fileIdx"], e["pageIndex"]) for e in assembly[sol]["soview"])
+                                for p in pages:
+                                    if (file_idx, p) not in seen:
+                                        assembly[sol]["soview"].append({
+                                            "pageIndex": p,
+                                            "fileIdx":   file_idx,
+                                            "fileName":  file_name,
+                                            "filePath":  file_path,
+                                            "fileId":    file_path or file_name,
+                                            "method":    "soview_3pattern",
+                                        })
+                                        seen.add((file_idx, p))
+                                        matched_pages_cnt += 1
+                                assembly[sol]["soview"].sort(key=lambda e: (e["fileIdx"], e["pageIndex"]))
+                            tracer.record(
+                                phase="5. SOview Scan",
+                                target=file_name,
+                                t0=t_sv_file,
+                                details=f"SO={so}, {len(sols_for_so)} SOLs, {matched_pages_cnt} pages matched",
+                            )
+                        except Exception as exc:
+                            tracer.record(
+                                phase="5. SOview Scan",
+                                target=file_name,
+                                t0=t_sv_file,
+                                details=f"ERROR: {exc}",
+                            )
+                            for sol in sols_for_so:
+                                errors.append({"sol": sol, "typeId": "soview", "error": str(exc)})
+                        completed_sv += 1
+
+                # TE scan: per SOL with valid BQ data
+                for sol in sol_list:
+                    if self._auto_detect_cancel.is_set():
+                        break
+                    meta = sol_metadata.get(sol, {})
+                    ordered_item = meta.get("ordered_item")
+                    list_te      = meta.get("list_te", [])
+
+                    if not ordered_item or not list_te:
+                        continue  # Missing BQ data → skip TE scan
+
+                    # Find TE files for this ordered_item (sorted newest first)
+                    te_found_files = [f for f in te_files.get(ordered_item, []) if f.get("found")]
+                    if not te_found_files:
+                        continue
+
+                    te_remaining = list(list_te)
+                    for te_file_idx, te_file_entry in enumerate(te_found_files):
+                        if self._auto_detect_cancel.is_set():
+                            break
+                        if not te_remaining:
+                            break
+
+                        te_file_name = te_file_entry.get("name", "")
+                        te_file_path = te_file_entry.get("path", "")
+                        te_pdf_source = te_file_entry.get("path") or te_file_entry.get("bytes")
+
+                        _progress({"sol": sol,
+                                   "typeId": "layout",
+                                   "method": "te_barcode_scan",
+                                   "fileName": te_file_name,
+                                   "currentFile": 1, "totalFiles": len(te_found_files)})
+
+                        t_te_file = time.perf_counter()
+                        try:
+                            te_page_map = scan_te_pdf_barcode(
+                                pdf_source=te_pdf_source,
+                                te_codes_needed=te_remaining,
+                                cancel_event=self._auto_detect_cancel,
+                            )
+                            te_matched_cnt = 0
+                            seen_te = set((e["fileIdx"], e["pageIndex"]) for e in assembly[sol]["layout"])
+                            for te_code, page_num in te_page_map.items():
+                                if (te_file_idx, page_num) not in seen_te:
+                                    assembly[sol]["layout"].append({
+                                        "pageIndex": page_num,
+                                        "fileIdx":   te_file_idx,
+                                        "fileName":  te_file_name,
+                                        "filePath":  te_file_path,
+                                        "fileId":    te_file_path or te_file_name,
+                                        "method":    "te_barcode_scan",
+                                        "teCode":    te_code,
+                                    })
+                                    seen_te.add((te_file_idx, page_num))
+                                    te_matched_cnt += 1
+                                if te_code in te_remaining:
+                                    te_remaining.remove(te_code)
+                            assembly[sol]["layout"].sort(key=lambda e: (e["fileIdx"], e["pageIndex"]))
+                            tracer.record(
+                                phase="6. TE Scan",
+                                target=te_file_name,
+                                t0=t_te_file,
+                                details=f"SOL={sol}, OI={ordered_item}, {te_matched_cnt} TEs found",
+                            )
+                        except Exception as exc:
+                            tracer.record(
+                                phase="6. TE Scan",
+                                target=te_file_name,
+                                t0=t_te_file,
+                                details=f"ERROR: {exc}",
+                            )
+                            errors.append({"sol": sol, "typeId": "layout", "error": str(exc)})
+
+                # ── Stage 6: Extract matched pages to RAM cache ───────────
+                t_ram = time.perf_counter()
+                clear_ram_cache()
+                soview_batched = {so: soview_files.get(so, []) for so in so_to_sols}
+                te_batched     = te_files  # keyed by ordered_item; reused by extract step below
+
+                for sol, types_dict in assembly.items():
+                    so = parse_so(sol)
+                    for type_id, items in types_dict.items():
+                        if not items:
+                            continue
+                        ram_key = f"{sol}_{type_id}"
+                        out_doc = fitz.open()
+                        opened_docs: dict = {}
+                        try:
+                            if type_id == "soview":
+                                found_files_for_so = [f for f in soview_batched.get(so, []) if f.get("found")]
+                            else:
+                                # layout/TE: find files by ordered_item
+                                oi = sol_metadata.get(sol, {}).get("ordered_item")
+                                found_files_for_so = [f for f in te_batched.get(oi, []) if f.get("found")] if oi else []
+
+                            for e in items:
+                                fidx = e.get("fileIdx", 0)
+                                p    = e.get("pageIndex")
+                                pdf_source = None
+                                if 0 <= fidx < len(found_files_for_so):
+                                    pdf_source = found_files_for_so[fidx].get("path") or found_files_for_so[fidx].get("bytes")
+                                if not pdf_source and e.get("filePath"):
+                                    pdf_source = e.get("filePath")
+                                if not pdf_source:
+                                    continue
+
+                                cache_key = (fidx, pdf_source if isinstance(pdf_source, str) else id(pdf_source))
+                                if cache_key not in opened_docs:
+                                    if isinstance(pdf_source, (bytes, bytearray)):
+                                        opened_docs[cache_key] = fitz.open(stream=pdf_source, filetype="pdf")
+                                    else:
+                                        opened_docs[cache_key] = fitz.open(pdf_source)
+
+                                src_doc = opened_docs.get(cache_key)
+                                if src_doc and p is not None:
+                                    page_idx_0based = p - 1
+                                    if 0 <= page_idx_0based < src_doc.page_count:
+                                        out_doc.insert_pdf(src_doc, from_page=page_idx_0based, to_page=page_idx_0based)
+
+                            if out_doc.page_count > 0:
+                                AUTO_DETECT_RAM_CACHE[ram_key] = out_doc.tobytes(garbage=3, deflate=True)
+                        except Exception as exc:
+                            print(f"[run_auto_detect_trim] RAM extract {sol}/{type_id}: {exc}")
+                        finally:
+                            for d in opened_docs.values():
+                                try:
+                                    d.close()
+                                except Exception:
+                                    pass
+                            out_doc.close()
+
+                total_ram_bytes = sum(len(b) for b in AUTO_DETECT_RAM_CACHE.values())
+                tracer.record(
+                    phase="7. RAM Cache",
+                    target=f"{len(AUTO_DETECT_RAM_CACHE)} sub-docs",
+                    t0=t_ram,
+                    details=f"{total_ram_bytes // 1024} KB written",
+                )
+
+                # ── Stage 7: Build bq_metadata for frontend ──────────────
+                bq_metadata: dict = {}
+                for sol in sol_list:
+                    meta        = sol_metadata.get(sol, {})
+                    sv_entries  = assembly[sol].get("soview", [])
+                    te_entries  = assembly[sol].get("layout", [])
+
+                    sv_file = sv_entries[0].get("fileName", "") if sv_entries else ""
+                    sv_path = sv_entries[0].get("filePath", "") if sv_entries else ""
+                    te_file = te_entries[0].get("fileName", "") if te_entries else ""
+                    te_path = te_entries[0].get("filePath", "") if te_entries else ""
+
+                    bq_metadata[sol] = {
+                        "ordered_item":  meta.get("ordered_item"),
+                        "list_te":       meta.get("list_te", []),
+                        "soview_pages":  len(sv_entries),
+                        "soview_file":   sv_file,
+                        "soview_path":   sv_path,
+                        "te_pages":      len(te_entries),
+                        "te_file":       te_file,
+                        "te_path":       te_path,
+                    }
+
+                # Print trace summary table upon completion
+                tracer.print_summary()
+
+                if self._auto_detect_cancel.is_set():
+                    self._eval("window._onAutoDetectCancelled()")
+                    return
+
+                payload = _json_str({
+                    "success":      True,
+                    "assembly":     assembly,
+                    "errors":       errors,
+                    "bq_metadata":  bq_metadata,
+                    "missing_data": missing_data,
+                    "bq_error":     bq_error,
+                })
+                self._eval(f"window._onAutoDetectDone({payload})")
+
+            except Exception as exc:
+                traceback.print_exc()
+                err_msg = str(exc) or f"{type(exc).__name__}: {exc}"
+                payload = _json_str({
+                    "success": False, "error": err_msg,
+                    "assembly": {}, "errors": [],
+                    "bq_metadata": {}, "missing_data": {},
+                })
+                self._eval(f"window._onAutoDetectDone({payload})")
+
+        _run_in_thread(_task)
+
     # ── 6. OTA Update ────────────────────────────────────────
 
     @_trace

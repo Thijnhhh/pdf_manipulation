@@ -3,11 +3,11 @@
 ---
 
 ## Document Information
-* **Document Version:** 1.1.0
+* **Document Version:** 1.2.0
 * **Target Application:** PDF Manipulation Tool Desktop Edition
 * **Target Operating System:** Microsoft Windows 10 / 11 (64-bit)
 * **Author / Ownership:** Thinh Phung / Avery Dennison (AD) RFID FRU Team
-* **Last Updated:** 2026-09-10
+* **Last Updated:** 2026-09-16
 
 ---
 
@@ -39,17 +39,19 @@
 # 1. Overview
 
 ### 1.1 Purpose & High-Level Scope
-The **PDF Manipulation Desktop Application** is an enterprise-grade utility developed for the Avery Dennison (AD) RFID / Fast React Utility (FRU) division. The software automates the extraction, sorting, deduplication, merging, and assembly of complex manufacturing and sales documentation PDFs (Packaging Front Layouts / PFL, Sales Order Lines / SOL, engineering film drawings, and production dockets).
+The **PDF Manipulation Desktop Application** is an enterprise-grade utility developed for the Avery Dennison (AD) RFID / Fast React Utility (FRU) division. The software automates the extraction, sorting, deduplication, merging, and assembly of complex manufacturing and sales documentation PDFs (Packaging Front Layouts / PFL, Sales Order Lines / SOL, engineering film drawings, production dockets, and Trim Adidas Ticket Express bundles).
 
 #### Core Problems Solved:
 1. **Google Apps Script (GAS) Execution Limits:** The legacy cloud-scripted solution suffered from Google's strict 6-minute maximum execution timeout, Drive API rate limits, and slow web roundtrips when parsing multi-hundred-page PDFs.
 2. **High-Latency Network Storage (UNC / NAS):** Manufacturing environments host multi-gigabyte document trees across on-premise Windows Network Shares (`\\server\share`). Serial I/O over remote shares led to application freezing and memory exhaustion.
-3. **Automated Barcode Page-Range Isolation:** Production order bundles contain multiple Sales Orders (SO) and Sales Order Lines (SOL) concatenated within single files. The desktop tool provides automated 1D/2D barcode boundary scanning to extract specific page subsets without human error.
-4. **Desktop Autonomy:** Operates as a self-contained, high-performance Windows desktop application utilizing multi-core hardware threading, native PyMuPDF vector extraction, and Microsoft Edge Chromium WebView2 rendering.
+3. **Automated Barcode Page-Range Isolation:** Production order bundles contain multiple Sales Orders (SO) and Sales Order Lines (SOL) concatenated within single files. The desktop tool provides automated 1D barcode boundary scanning with upside-down (180°) bottom-fallback detection to extract specific page subsets without human error.
+4. **Desktop Autonomy & BigQuery Integration:** Operates as a self-contained, high-performance Windows desktop application utilizing multi-core hardware threading, native PyMuPDF vector extraction, Microsoft Edge Chromium WebView2 rendering, and direct Google Cloud BigQuery Stored Procedure execution.
 
 #### Primary Functional Modules:
 * **PDF Merger (PFL):** Automated multi-folder barcode matching, layout sorting, front-drawing prioritization, and an interactive 3-panel manual assembly workspace. Presets read single-column SOL lists (`A:A`). Layout folders support Google Drive and local UNC.
 * **PDF Merger (RFID HT):** Dedicated module for the RFID Heat Transfer line. Presets read 4 columns (`SOL`, `Job`, `RB`, `Flag`). SOview scanning executes single-pass Barcode Range Scan for `Flag=True` items while maintaining Fast Mode / OCR Mode for `Flag=False`. Layout folder is local UNC, matched 1-to-1 by `Job` code, extracting all pages directly without barcode/OCR scanning.
+* **PDF Merger (PFL Thermal):** Specialized module for PFL Thermal production. Treats all SOLs uniformly under `Flag=True` (Barcode Range Scan mode), auto-disables the OCR toggle in the UI, and accurately isolates multi-page continuation runs.
+* **Trim Adidas:** Specialized workflow integrating BigQuery stored procedure `get_TE` with Service Account authentication. Fetches `Ticket Express Number` and `Ordered Item`, validates missing records, parses SOview PDFs using a 3-Pattern regex engine (`*SO*`, `FOR MFG/PURCHASE X/Y`, `Page X of Y`), locates matching Ticket Express (TE) pages via `*TE*` text barcodes, and automatically pairs SOview and TE pages into ordered exports.
 * **PDF Deduplicate:** High-speed removal of identical repeated pages in production docket batches using fast-path text regex and an $O(K \log(N/K))$ exponential cluster-jump algorithm.
 * **PDF Combine:** Recursive multi-folder search for SOL matching, parallel network pre-fetching, and bulk split/merge assembly.
 * **Over-The-Air (OTA) Updater:** Silent remote version checking against Google Drive with detached self-updating process replacement.
@@ -64,9 +66,10 @@ The **PDF Manipulation Desktop Application** is an enterprise-grade utility deve
 | **Desktop Host GUI** | `pywebview` | **6.2.1** | Native Windows WinForms host embedding Microsoft Edge Chromium WebView2 |
 | **Internal WSGI Server** | `bottle` | **0.13.4** | Ultra-lightweight local microserver serving static assets and session temp images |
 | **PDF Rendering & Assembly** | `pymupdf` (fitz) | **1.28.2** | High-performance C-based MuPDF engine for page extraction, rendering, and vector assembly |
-| **Barcode Recognition** | `pyzbar` | **0.1.9** | C-library wrapper (libzbar-64) for decoding 1D (Code 128/39) and 2D (QR/DataMatrix) barcodes |
+| **Barcode Recognition** | `pyzbar` | **0.1.9** | C-library wrapper (libzbar-64) for decoding 1D linear barcodes (Code 128/39) with 2D exclusion |
 | **Optical Character Recognition** | `pytesseract` | **0.3.13** | Python wrapper for Google Tesseract OCR v5 engine (scanned PDF fallback) |
 | **Image Processing** | `Pillow` (PIL) | **12.3.0** | Pixel-level manipulation, color space conversion, and ROI image clipping |
+| **Google Cloud BigQuery** | `google-cloud-bigquery` | **3.45.1** | Invoking stored procedure `raw_ingest.get_TE` for Trim Adidas order intelligence |
 | **Google Sheets API** | `gspread` | **6.2.1** | Reading user presets and SOL lists via Google Sheets v4 API |
 | **Google Drive API** | `google-api-python-client` | **2.198.0** | Recursive folder traversal and chunked stream download via Drive v3 API |
 | **Authentication** | `google-auth`, `google-auth-httplib2` | **2.56.3**, **0.4.1** | GCP Service Account JWT authentication and token lifecycle |
@@ -97,28 +100,31 @@ graph TD
     end
 
     subgraph Core_Backend_Engine ["Core Backend Engine (Python 3.14.6)"]
-        DETECTOR["backend/pdf_detector.py (Barcode, Digital, Scanned OCR)"]
+        DETECTOR["backend/pdf_detector.py (1D Barcode, Digital Text, Scanned OCR)"]
         DEDUPE["backend/pdf_deduplicator.py (Cluster-Jump Binary Search)"]
         COMBINER["backend/pdf_combiner.py (Recursive Search & Parallel Pre-fetch)"]
         PROCESSOR["backend/pdf_processor.py (PyMuPDF fitz Slicing & Merging)"]
+        TRIM["backend/trim_service.py (BigQuery get_TE & SOview 3-Pattern)"]
         UPDATER["backend/updater.py (OTA Background Update Engine)"]
     end
 
     subgraph Data_Storage_Layer ["Data, Cloud & File Access Layer"]
-        RESOLVER["backend/file_resolver.py (Dual-Mode Local UNC & Drive API)"]
+        RESOLVER["backend/file_resolver.py (Fast Local Batch os.scandir & Drive API)"]
         SHEETS["backend/sheets_service.py (Batch Sheet Ingestion)"]
         RAM_CACHE["AUTO_DETECT_RAM_CACHE & In-Memory Doc Buffers"]
         TEMP_DISK["%TEMP%/pdfmerger_* & %TEMP%/pdf_merger_*"]
         LOCAL_UNC["Local File System / Windows UNC Network Shares"]
         GCP_CLOUD["Google Cloud Platform (Drive API v3, Sheets API v4)"]
+        GCP_BQ["Google BigQuery (raw_ingest.get_TE Procedure)"]
     end
 
     UI_JS <-->|"window.pywebview.api (Promises)"| BRIDGE
     BRIDGE -->|"window.evaluate_js (Async Progress)"| UI_JS
     BOTTLE -->|"Static Assets & /temp/ Images"| UI_HTML
-    BRIDGE --> DETECTOR & DEDUPE & COMBINER & PROCESSOR & UPDATER
-    DETECTOR & DEDUPE & COMBINER --> RESOLVER
-    BRIDGE --> SHEETS
+    BRIDGE --> DETECTOR & DEDUPE & COMBINER & PROCESSOR & TRIM & UPDATER
+    DETECTOR & DEDUPE & COMBINER & TRIM --> RESOLVER
+    TRIM --> GCP_BQ
+```    BRIDGE --> SHEETS
     RESOLVER <--> GCP_CLOUD
     RESOLVER <--> LOCAL_UNC
     DETECTOR & PROCESSOR <--> RAM_CACHE
@@ -495,11 +501,20 @@ Before barcode detection or pre-fetching begins, `validate_so_flags()` inspects 
 
 ---
 
+##### 1D-Only Barcode Scanning & Upside-Down (180°) Bottom Fallback
+Across all barcode-scanning modes in SOview (`_detect_barcode_soview`), recognition is strictly bound to **1D linear barcodes** (e.g. Code 128 / Code 39) matching the SOL regex `^\d{9}-\d{1,3}$`:
+* **2D Barcode Exclusion:** 2D symbologies (`QRCODE`, `PDF417`, `SQCODE`, `DATAMATRIX`) are explicitly ignored to prevent false-positive range closures from noisy, small square codes.
+* **Top 25% + Bottom 25% Fallback:**
+  1. *Primary Pass (Top 25%):* Scans the top quarter of the page at native 100 DPI (fast path for standard upright pages, taking ~18ms).
+  2. *Secondary Fallback (Bottom 25%):* If the top quarter does not contain a valid 1D SOL barcode, the engine immediately crops and scans the bottom 25% of the page. This guarantees 100% detection accuracy on documents scanned upside down (180° rotated), where the large 1D Code 128 barcode is positioned at the footer.
+
+---
+
 ##### Mode 1 — Fast Mode (`Flag=False, use_ocr=False`, default)
 
 Assumes every SOview page containing a 1D SOL barcode is a **single-page** document. No OCR and no secondary barcode verification are performed. Optimized for maximum throughput.
-* Renders only the top 25% of each page at native 100 DPI.
-* Scans for 1D barcodes via `pyzbar`.
+* Renders at native 100 DPI.
+* Scans for 1D barcodes via `pyzbar` with Top 25% + Bottom 25% fallback.
 * When a target SOL is matched, records `[page_num]` and continues.
 
 ---
@@ -507,23 +522,25 @@ Assumes every SOview page containing a 1D SOL barcode is a **single-page** docum
 ##### Mode 2 — V2 OCR Mode (`Flag=False, use_ocr=True`)
 
 Designed for PFL production runs where multi-page SOL documents occur and contain "Page X of Y" textual footer notations.
-1. **Step 1 (Gate Check):** Renders top 25% of page $i$ at 100 DPI; decodes 1D barcode via `pyzbar`. If no barcode or not in `target_sol_set`, advances $i \mathrel{+}= 1$ without OCR.
+1. **Step 1 (Gate Check):** Scans page $i$ at 100 DPI for a 1D barcode (Top 25% with Bottom 25% fallback). If no barcode or not in `target_sol_set`, advances $i \mathrel{+}= 1$ without OCR.
 2. **Step 2 (OCR Page X of Y):** If matched, renders bottom 25% crop and runs Tesseract OCR (with fallback upscaling to 150 DPI). If $Y=1$, records `[page_num]` and advances 1 page.
 3. **Step 3 (Backward Scan):** If $Y > 1$, backward scans offsets $Y-1$ down to 1 (`expected_x = offset + 1`):
-   - **Boundary Pre-check:** Checks top 25% of `back_page` for any 1D barcode. If found, this page starts a *different* SOL $\rightarrow$ skips OCR to avoid invalid boundary crossing.
+   - **Boundary Pre-check:** Checks top/bottom 25% of `back_page` for any 1D barcode. If found, this page starts a *different* SOL $\rightarrow$ skips OCR to avoid invalid boundary crossing.
    - **OCR Verification:** Confirms bottom 25% OCR matches `expected_x == offset + 1`.
    - **Range Close:** On confirmation (`bx == expected_x`), records `[page_num .. page_num + expected_x - 1]` (total `expected_x` pages) and skips ahead $i \mathrel{+}= \text{expected\_x}$.
    - **Fallback:** If backward scan exhausts without confirmation (`not back_found`), records single page `[page_num]` and advances $i \mathrel{+}= 1$.
 
 ---
 
-##### Mode 3 — Barcode Range Scan Mode (`Flag=True`)
+##### Mode 3 — Barcode Range Scan Mode (`Flag=True` or PFL Thermal)
 
-Engineered specifically for the **RFID Heat Transfer (RFID HT)** manufacturing workflow. In RFID HT production, an order starts with a page bearing a 1D SOL barcode, followed by an arbitrary number of continuation pages that contain **no barcode markers**.
+Engineered for the **RFID Heat Transfer (RFID HT)** manufacturing workflow and the **PFL Thermal** module. In these workflows, an order starts with a page bearing a 1D SOL barcode, followed by an arbitrary number of continuation pages that contain **no barcode markers**.
+* In **PFL Thermal**, all SOLs are automatically assigned `Flag=True` (OCR toggle is hidden in the UI).
+* In **RFID HT**, `Flag=True` is read dynamically per SOL from the Google Sheet preset.
 
 ```mermaid
 flowchart TD
-    Start([Scan Page i @ 100 DPI Top 25%]) --> HasBC{1D Barcode\nFound?}
+    Start([Scan Page i @ 100 DPI Top 25% + Bottom Fallback]) --> HasBC{1D Barcode\nFound?}
     
     HasBC -- No --> InRange{Is a Flag=True\nRange Open?}
     InRange -- Yes --> Accumulate["Accumulate page i into open_sol\n(Advance i += 1)"] --> NextPage([Next Page])
@@ -531,21 +548,22 @@ flowchart TD
 
     HasBC -- Yes --> CheckOpen{Is a Flag=True\nRange Open?}
     CheckOpen -- Yes --> ClosePrev["Close previous open_sol at (i - 1)\nclosed_ranges[open_sol] = [open_page .. i-1]"] --> EvalBC
-    CheckOpen -- No --> EvalBC["Evaluate Detected Barcode"]
+    CheckOpen -- No --> EvalBC["Evaluate Detected 1D Barcode"]
 
     EvalBC --> InTarget{barcode_val in\ntarget_sol_set?}
     InTarget -- No --> SkipBC["Non-target SOL\n(Advance i += 1)"] --> NextPage
     InTarget -- Yes --> AlreadyDone{Already recorded\nin closed_ranges?}
     AlreadyDone -- Yes --> SkipBC
 
-    AlreadyDone -- No --> CheckFlag{sol_flags[barcode_val]\n== True?}
+    CheckFlag{sol_flags[barcode_val]\n== True or PFL Thermal?}
+    AlreadyDone -- No --> CheckFlag
     CheckFlag -- Yes --> OpenRange["OPEN NEW RANGE:\nopen_sol = barcode_val\nopen_page = i"] --> Advance1["i += 1"] --> NextPage
     CheckFlag -- No --> FastOrOCR["Execute Mode 1 (Fast) or Mode 2 (OCR)\nbased on use_ocr"] --> NextPage
 ```
 
 **Range Delimitation Rules:**
 1. **Open Boundary:** Opened at `current_page` when a 1D barcode matching a target SOL with `Flag=True` is decoded (`open_sol = barcode_val, open_page = page_num`).
-2. **Continuation Accumulation:** Every subsequent page where no barcode is detected is automatically absorbed into `open_sol`.
+2. **Continuation Accumulation:** Every subsequent page where no 1D barcode is detected is automatically absorbed into `open_sol`.
 3. **Close Boundary Trigger 1 (Subsequent Barcode):** The moment **ANY** valid 1D barcode is encountered on a subsequent page (whether another target SOL or an unselected SOL), the active range is closed at `current_page - 1`:
    $$\text{closed\_ranges}[open\_sol] = [\text{open\_page} \dots \text{page\_num} - 1]$$
 4. **Close Boundary Trigger 2 (End of File):** When the scanning loop reaches `total_pages`, any open range is closed at the file boundary:
@@ -574,9 +592,10 @@ A single production SOview PDF file frequently bundles multiple Sales Orders wit
 
 | Feature / Metric | Old Algorithm | Mode 1 (Fast) | Mode 2 (V2 OCR) | Mode 3 (Barcode Range Scan) |
 | :--- | :--- | :--- | :--- | :--- |
-| **Target Manufacturing Line** | Legacy PFL | PFL (Default) | PFL (Multi-Page) | **RFID HT** (`Flag=True`) |
-| **Render Resolution** | 150 DPI (Full page) | 100 DPI (Top 25% crop) | 100 DPI (Full page) | 100 DPI (Top 25% crop) |
-| **Barcode Scan Area** | Full page pyzbar | Top 25% crop pyzbar | Top 25% crop (Gate check) | Top 25% crop pyzbar |
+| **Target Manufacturing Line** | Legacy PFL | PFL (Default) | PFL (Multi-Page) | **RFID HT** (`Flag=True`) & **PFL Thermal** |
+| **Render Resolution** | 150 DPI (Full page) | 100 DPI (Top 25% + Bot Fallback) | 100 DPI (Full page) | 100 DPI (Top 25% + Bot Fallback) |
+| **Barcode Scan Area** | Full page pyzbar | Top 25% (Fallback Bot 25%) | Top 25% (Gate check) | Top 25% (Fallback Bot 25%) |
+| **Barcode Type Filter** | 1D & 2D mixed | **1D Only** (Excludes 2D QR/DM) | **1D Only** | **1D Only** |
 | **Multi-page Delimitation** | 1D $\rightarrow$ wait for 2D barcode | ❌ None (1 page only) | ✅ OCR "Page X of Y" + Backward Scan | ✅ **Range accumulation until next barcode or EOF** |
 | **OCR Dependency** | ❌ None | ❌ None | ✅ Tesseract (Bottom 25%) | ❌ None |
 | **Page Skip-Ahead** | ❌ No | ❌ No | ✅ $i \mathrel{+}= \text{expected\_x}$ upon confirmation | ❌ Sequential single-pass |
@@ -625,6 +644,16 @@ Layout processing varies fundamentally between manufacturing lines. The applicat
 * **Extraction Logic:** Directly extracts **ALL pages** (`1` to `doc.page_count`) from every matching job layout file into the assembly.
 * **Zero OCR / Text Overhead:** No text regex matching or OCR scanning is performed on RFID HT layout files. Every page is recorded with `method: "layout_all_pages"`, maximizing extraction throughput and eliminating detection misses.
 
+##### C. Dynamic SOL Cluster Parser (`_extract_sols_from_text`)
+Digital text and OCR scanned text frequently contain composite SOL cluster notations where multiple line items share a single 9-digit base Sales Order. The regex engine evaluates text blocks via `_DYNAMIC_SOL_CLUSTER_PATTERN`:
+* **Syntax Grammar:**
+  $$\text{Prefix (not digit)} + \text{SO (9 digits)} + \text{"-"} + \text{First Line (1-3 digits)} + \left[ \text{delimiter} + \text{Line (1-3 digits)} \right]^*$$
+  Delimiters support commas (`,`), semicolons (`;`), and hyphens (`-`).
+* **Format Disambiguation:**
+  - *Continuous Range:* If followed by exactly one hyphen (`-`) and a larger line number, expands all intermediate lines (e.g. `146842454-1-4` $\rightarrow$ `lines 1, 2, 3, 4`).
+  - *Discrete List:* If separated by commas or semicolons, or multiple hyphens, extracts exact discrete lines (e.g. `146842455-1,5,9` $\rightarrow$ `lines 1, 5, 9` or `146842454-1; 2; 3; 4` $\rightarrow$ `lines 1, 2, 3, 4`).
+  - *Suffix Protection:* Delimited lines followed by letters (e.g. `146842454-1-61mm`) are automatically excluded from line expansion, safely extracting only `146842454-1`.
+
 ---
 
 #### 4. Architecture of Unified Detection Loop (`run_auto_detect_all`)
@@ -668,12 +697,56 @@ Reading dozens of multi-megabyte PDFs serially across a Windows UNC share (`\\se
 
 ---
 
+#### 6. Trim Adidas Workflow & BigQuery Engine (`backend/trim_service.py`)
+
+The **Trim Adidas** module implements a dedicated dual-document pairing pipeline integrating Google BigQuery:
+
+```mermaid
+flowchart TD
+    InputSOLs([Target SOL List]) --> Step1[Call BigQuery Stored Procedure\navy-data-rfid-fru.raw_ingest.get_TE]
+    Step1 --> ValidateBQ{Validate Ordered Item\n& Ticket Express}
+    
+    ValidateBQ -->|Missing TE/Item| ModalWarn[Display Warning Modal in UI\nOption to Proceed or Abort]
+    ValidateBQ -->|Valid| Step2[Scan SOview PDFs\n3-Pattern Engine]
+    ModalWarn -- User Continues --> Step2
+    
+    Step2 --> P1["Pattern 1: Check *SO* Barcode text"]
+    P1 --> P2["Pattern 2: FOR MANUFACTURING X/Y"]
+    P2 --> P3["Pattern 3: Page X of Y Continuation"]
+    
+    Step3[Scan TE Layout PDFs] --> TEFind["Match *TE* Barcode text (Exact 1 page per TE)"]
+    
+    Step2 & Step3 --> MergePairs["Pair SOview pages + TE pages per SOL"]
+    MergePairs --> AutoExport["Export Merged Pairs to Output Folder"]
+```
+
+1. **BigQuery Procedure (`raw_ingest.get_TE`):** Evaluates `STRUCT(so AS so, line AS line)` arrays in a single cloud query over BigQuery Client, retrieving `Ticket Express Number` and `Ordered Item`.
+2. **Missing Data Pre-check:** If any target SOL is missing `Ordered Item` or `Ticket Express Number`, a non-blocking modal highlights the missing keys and warns the operator before scanning.
+3. **SOview 3-Pattern Scanning:**
+   - *Pattern 1 (`*SO*`):* Identifies the base Sales Order.
+   - *Pattern 2 (`FOR MANUFACTURING X/Y`):* Matches line item $X$ against target SOL.
+   - *Pattern 3 (`Page X of Y`):* Continues capturing multi-page SOview sheets until $X \ge Y$.
+4. **TE Barcode Fast-Path (`*TE*`):** Scans the Ticket Express PDF using vector text extraction for `*{te}*`, immediately recording the single matching page per TE code.
+
+---
+
+#### 7. Fast Batch Local Search (`backend/file_resolver.py: find_all_pdfs_local_batch`)
+
+To bypass Windows Network Share (UNC) SMB latency caused by deep recursive `rglob` traversal:
+* Uses non-recursive `os.scandir` iteration on root/sub-folders.
+* Pre-filters directory names against target SO prefixes (e.g. matching date/month folders).
+* Eliminates redundant network roundtrips, reducing multi-folder discovery time from 15–20s down to <1s.
+
+---
+
 ### 4.3 Comprehensive Logic-to-UI Mapping
 
 | User Interaction / Event | UI Component & Screen | BridgeApi Method | Threading Model | Backend Action & UI State Update |
 | :--- | :--- | :--- | :--- | :--- |
 | Application Launch | `#app-loading-overlay` | `get_initial_data("PFL")`<br>`get_local_version()` | Synchronous / Async Init | Ingests Google Sheets presets for default line; updates local version badge; fades out loading overlay. |
-| Select Module Card (Dashboard) | `.module-card[data-module="merger-pfl"]`<br>`.module-card[data-module="merger-rfid"]`<br>`#dashboard-screen` | `get_initial_data(line)` | Main Thread / Worker | Switches `.screen.active` to `input-screen`; sets `state.currentLine` (`"PFL"` or `"RFID HT"`); adapts UI (hides Drive toggles & Manual SOL input for RFID HT); fetches presets filtered by `Line`. |
+| Select Module Card (Dashboard) | `.module-card[data-module="merger-pfl"]`<br>`.module-card[data-module="merger-rfid"]`<br>`.module-card[data-module="merger-thermal"]`<br>`.module-card[data-module="merger-trim"]`<br>`#dashboard-screen` | `get_initial_data(line)` | Main Thread / Worker | Switches `.screen.active` to `input-screen`; sets `state.currentLine` (`"PFL"`, `"RFID HT"`, `"PFL THERMAL"`, or `"TRIM ADIDAS"`); adapts UI (hides Drive toggles for UNC-only lines; hides OCR toggle for Thermal/Trim); fetches presets filtered by `Line`. |
+| Run Auto Detect (Trim Adidas) | `#btn-auto-detect`<br>`#input-screen` | `run_auto_detect_trim(...)` | Background Thread (`_run_in_thread`) | Calls BigQuery `get_TE`; performs 3-Pattern SOview & TE barcode matching; opens `trim-results-screen`. |
+| Click "Fetch & Open" | `#btn-fetch`<br>`#input-screen` | `pre_fetch_all_pdfs(...)` | Background Thread (`_run_in_thread`) | Validates 1 SO = 1 Flag consistency (`validateRfidFlags`); resolves PDFs via `file_resolver`; pushes progress to `#prefetch-progress-modal`; navigates to `workspace-screen`. |
 | Select Preset Dropdown | `#preset-select`<br>`#input-screen` | *Pure UI State* | Main Thread | Populates folder inputs; renders Preset SOL preview grid: 2 columns for PFL (`#`, `SOL Code`); 5 columns for RFID HT (`#`, `SOL Code`, `Job`, `RB`, `Flag`). |
 | Click "Fetch & Open" | `#btn-fetch`<br>`#input-screen` | `pre_fetch_all_pdfs(...)` | Background Thread (`_run_in_thread`) | Validates 1 SO = 1 Flag consistency (`validateRfidFlags`); resolves PDFs via `file_resolver`; pushes progress to `#prefetch-progress-modal`; navigates to `workspace-screen`. |
 | Click "Run Auto Detect" | `#btn-auto-detect`<br>`#input-screen` | `run_auto_detect(...)` | Background Thread (`_run_in_thread`) | Validates 1 SO = 1 Flag consistency; executes Three-Mode barcode stream & layout extraction; populates `AUTO_DETECT_RAM_CACHE`; opens `auto-detect-results-screen`. |

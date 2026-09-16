@@ -28,12 +28,12 @@ No-console-flash policy:
 
 from __future__ import annotations
 
-import io
+import concurrent.futures
 import os
+import re
 import sys
 import threading
 import time
-from typing import Callable
 
 # ── Validate SO Flags ────────────────────────────────────────────────────────
 
@@ -288,24 +288,42 @@ def _get_ocr_regex():
     return _OCR_PAGE_REGEX
 
 
+_2D_BARCODE_TYPES = {"QRCODE", "PDF417", "SQCODE", "DATAMATRIX"}
+
+
 def _scan_1d_barcode_top25(img, decode_fn):
     """
-    Scan top 25% of img for a 1D SOL barcode using pyzbar decode_fn.
+    Scan for a 1D SOL barcode using pyzbar decode_fn:
+      1. Scans top 25% first (standard document orientation).
+      2. If not found, falls back to bottom 25% (upside-down scanned pages).
+      3. Strictly ignores 2D barcodes (QR codes, DataMatrix, etc.).
     Returns the SOL string if found and matches pattern, else empty string.
     """
     sol_regex = _get_sol_regex()
-    try:
-        barcodes = decode_fn(_crop_top_fraction(img, 0.25))
-    except Exception:
-        return ""
-    for bc in barcodes:
+
+    def _extract_1d(crop_img):
         try:
-            val = bc.data.decode("utf-8", errors="replace").strip()
-            if sol_regex.match(val):
-                return val
+            barcodes = decode_fn(crop_img)
         except Exception:
-            pass
-    return ""
+            return ""
+        for bc in barcodes:
+            if getattr(bc, "type", "") in _2D_BARCODE_TYPES:
+                continue
+            try:
+                val = bc.data.decode("utf-8", errors="replace").strip()
+                if sol_regex.match(val):
+                    return val
+            except Exception:
+                pass
+        return ""
+
+    # 1. Try top 25% first (fast path for normal upright pages)
+    val = _extract_1d(_crop_top_fraction(img, 0.25))
+    if val:
+        return val
+
+    # 2. Fallback to bottom 25% (handles 180° upside-down scanned pages)
+    return _extract_1d(_crop_bottom_fraction(img, 0.25))
 
 
 def _ocr_bottom25(img, pytesseract_mod, ocr_lang: str = "eng"):
@@ -624,6 +642,56 @@ def _detect_barcode_soview(
 
 
 
+_DYNAMIC_SOL_CLUSTER_PATTERN = re.compile(
+    r'(?<!\d)(\d{9})[ \t]*-[ \t]*(\d{1,3})(?!\d)'
+    r'((?:[ \t]*[,;\-][ \t]*\d{1,3}(?![a-zA-Z\d]))*)'
+)
+
+
+def _extract_sols_from_text(text: str) -> set:
+    """
+    Extract all SOLs present in text, supporting:
+      • Single SOL: 146842454-1
+      • Range: 146842454-1-4 or 146842454-1 - 4 (exactly 1 '-' after first line -> lines 1..4)
+      • Discrete list: 146842455-1,5,9 or 146842454-1; 2; 3; 4 or 146842454-1 - 4-5
+      • Auto-excludes suffixes with attached letters: e.g. 146842454-1-61mm -> extracts 146842454-1
+    """
+    found_sols = set()
+    for match in _DYNAMIC_SOL_CLUSTER_PATTERN.finditer(text):
+        so = match.group(1)
+        first_line = int(match.group(2))
+        tail = match.group(3) or ""
+
+        if not tail:
+            found_sols.add(f"{so}-{first_line}")
+            continue
+
+        items = re.findall(r"([,;\-])[ \t]*(\d{1,3})(?![a-zA-Z\d])", tail)
+        if not items:
+            found_sols.add(f"{so}-{first_line}")
+            continue
+
+        separators = [sep for sep, _ in items]
+        lines = [int(num) for _, num in items]
+
+        # Range: exactly 1 separator after first line and it is '-'
+        if len(items) == 1 and separators[0] == "-":
+            end_line = lines[0]
+            if first_line < end_line:
+                for line_num in range(first_line, end_line + 1):
+                    found_sols.add(f"{so}-{line_num}")
+            else:
+                found_sols.add(f"{so}-{first_line}")
+                found_sols.add(f"{so}-{end_line}")
+        else:
+            # Discrete list: ',' or ';' or >= 2 '-'
+            found_sols.add(f"{so}-{first_line}")
+            for line_num in lines:
+                found_sols.add(f"{so}-{line_num}")
+
+    return found_sols
+
+
 def _detect_pages_all_sols(
     pdf_source,
     sol_list,
@@ -640,10 +708,6 @@ def _detect_pages_all_sols(
 
     clean_sol_list = list(dict.fromkeys(s.strip() for s in sol_list if s and isinstance(s, str) and s.strip()))
     results = {sol: [] for sol in clean_sol_list}
-
-    import re
-    import concurrent.futures
-    import threading
 
     sol_patterns = {sol: re.compile(rf"(?<!\d){re.escape(sol)}(?!\d)") for sol in clean_sol_list}
     
@@ -662,7 +726,8 @@ def _detect_pages_all_sols(
             return (i, [])
         import pytesseract
         text = pytesseract.image_to_string(img, lang=ocr_lang)
-        found = [sol for sol in sol_list if sol_patterns[sol].search(text)]
+        page_sols = _extract_sols_from_text(text)
+        found = [sol for sol in clean_sol_list if (sol in page_sols or sol_patterns[sol].search(text))]
         return (i, found)
 
     for method in priority_chain:
@@ -721,8 +786,9 @@ def _detect_pages_all_sols(
                 if text.strip():
                     had_any_text = True
                     
-                for sol in sol_list:
-                    if page_num not in results[sol] and sol_patterns[sol].search(text):
+                page_sols = _extract_sols_from_text(text)
+                for sol in clean_sol_list:
+                    if page_num not in results[sol] and (sol in page_sols or sol_patterns[sol].search(text)):
                         results[sol].append(page_num)
                         
             _doc.close()
@@ -752,7 +818,7 @@ def _detect_pages_all_sols(
                         if i not in results[sol]:
                             results[sol].append(i)
                             
-            for sol in sol_list:
+            for sol in clean_sol_list:
                 results[sol].sort()
 
             return results, "scanned"
@@ -764,12 +830,14 @@ def _detect_pages_all_sols(
 
 class _AutoDetectTracer:
     """
-    Precision performance tracer for run_auto_detect_all.
+    Precision performance tracer for run_auto_detect_all and run_auto_detect_trim.
     Records duration of major phases and individual file operations.
     Prints real-time log lines and an ASCII summary breakdown table upon completion.
     """
-    def __init__(self, enabled: bool = True):
+    def __init__(self, enabled: bool = True, title: str = "Auto Detect Performance Breakdown", prefix: str = "DETECTOR"):
         self.enabled = enabled
+        self.title = title
+        self.prefix = prefix
         self.t_start = time.perf_counter()
         self.records: list[dict] = []
 
@@ -783,7 +851,7 @@ class _AutoDetectTracer:
                 "details": details,
             })
             detail_str = f" ({details})" if details else ""
-            print(f"[DETECTOR] >> {phase:<22} | {target:<32} | {duration_ms:>8.1f}ms{detail_str}", flush=True)
+            print(f"[{self.prefix}] >> {phase:<22} | {target:<32} | {duration_ms:>8.1f}ms{detail_str}", flush=True)
         return duration_ms
 
     def print_summary(self) -> None:
@@ -799,7 +867,7 @@ class _AutoDetectTracer:
         lines = [
             "",
             line_sep,
-            f" [DETECTOR TRACE SUMMARY] Auto Detect Performance Breakdown (Total: {total_elapsed_ms:.1f}ms)",
+            f" [{self.prefix} TRACE SUMMARY] {self.title} (Total: {total_elapsed_ms:.1f}ms)",
             sub_sep,
             f" {'Phase':<24} | {'Target / Item':<36} | {'Duration':>10} | {'Share':>7} | {'Details'}",
             sub_sep,
@@ -828,6 +896,9 @@ class _AutoDetectTracer:
         lines.append(line_sep)
         lines.append("")
         print("\n".join(lines), flush=True)
+
+
+AutoDetectTracer = _AutoDetectTracer
 
 
 # ── Top-level runner ──────────────────────────────────────────────────────────
@@ -1036,7 +1107,13 @@ def run_auto_detect_all(
 
         # ── Case B: Standard Priority-Chained Detection (SOview, PFL Layout) ──
         # Priority chain is resolved directly from frontend config (config[type_id]).
-        chain = config.get(type_id) or ["digital", "scanned"]
+        raw_chain = config.get(type_id)
+        if isinstance(raw_chain, dict):
+            chain = raw_chain.get("priority") or raw_chain.get("chain") or ["digital", "scanned"]
+        elif isinstance(raw_chain, list):
+            chain = raw_chain
+        else:
+            chain = ["digital", "scanned"]
 
         # Build unique file table: each physical file is processed once,
         # aggregating all SOLs that map to it across one or multiple SOs.

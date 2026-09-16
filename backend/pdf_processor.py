@@ -23,7 +23,6 @@ Public functions:
 from __future__ import annotations
 
 import base64
-import io
 import os
 import re
 import uuid

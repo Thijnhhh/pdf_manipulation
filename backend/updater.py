@@ -25,7 +25,6 @@ import os
 import subprocess
 import sys
 import zipfile  
-import time
 import tempfile
 from packaging.version import Version
 

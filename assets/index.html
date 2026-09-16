@@ -63,13 +63,13 @@
                     </div>
                     <div class="dashboard-changelog__body">
                         <div class="dashboard-changelog__version-line">
-                            <span class="changelog-version-tag" id="changelog-version-text">v1.1.0:</span>
+                            <span class="changelog-version-tag" id="changelog-version-text">v1.2.0:</span>
                         </div>
                         <ol class="dashboard-changelog__list">
-                            <li>Thay đổi cấu trúc file Input-PDF Merger Tool</li>
-                            <li>Add thêm module PDF Merger (RFID HT)</li>
-                            <li>Add thêm nút OCR để tăng tốc độ quét barcode trong SOview, chi tiết cách dùng xem trong
-                                sheet "Note: Nút OCR mode" trong file Input-PDF Merger Tool.</li>
+                            <li>Thêm 2 modules mới: PDF Merger (PFL Thermal) và Trim Adidas</li>
+                            <li>Fix tính năng đọc barcode soview khi file bị scan ngược</li>
+                            <li>Thay đổi logic quét layout của PFL: ví dụ: "146842455-1,5,9" sẽ được hiểu là 146842455-1
+                                146842455-5 và 146842455-9. Chi tiết logic thay đổi xem trên google sheets.</li>
                         </ol>
                     </div>
                 </div>
@@ -78,7 +78,7 @@
                 <button id="btn-reopen-changelog" class="dashboard-changelog-pill" style="display: none;"
                     title="Xem các điểm mới">
                     <span class="pill-icon">📢</span>
-                    <span class="pill-version" id="changelog-pill-version-text">v1.1.0</span>
+                    <span class="pill-version" id="changelog-pill-version-text">v1.2.0</span>
                     <span class="pill-text">(Updates)</span>
                 </button>
 
@@ -99,9 +99,19 @@
                         <h2 class="module-card__title">PDF Merger (RFID HT)</h2>
                     </button>
 
+                    <button class="module-card" data-module="merger_trim" id="card-merger-trim">
+                        <span class="module-card__icon">✂️</span>
+                        <h2 class="module-card__title">Trim Adidas</h2>
+                    </button>
+
+                    <button class="module-card" data-module="merger_pfl_thermal" id="card-merger-pfl-thermal">
+                        <span class="module-card__icon">🌡️</span>
+                        <h2 class="module-card__title">PDF Merger (PFL Thermal)</h2>
+                    </button>
+
                     <button class="module-card" data-module="deduplicate" id="card-deduplicate">
                         <span class="module-card__icon">🔍</span>
-                        <h2 class="module-card__title">PDF Deduplicate</h2>
+                        <h2 class="module-card__title">PDF Deduplicate<br>(Layout UQ RFID SB)</h2>
                     </button>
 
                     <button class="module-card" data-module="combine" id="card-combine">
@@ -450,7 +460,7 @@
                     <button id="btn-dedup-back" class="btn btn--ghost">⬅ Back to Dashboard</button>
                     <span class="toolbar__sol-badge">
                         <span>🔍</span>
-                        <span>PDF Deduplicate</span>
+                        <span>PDF Deduplicate<br>(Layout UQ RFID SB)</span>
                     </span>
                     <span></span>
                 </div>

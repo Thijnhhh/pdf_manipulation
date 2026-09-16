@@ -15,3 +15,14 @@ pyinstaller-hooks-contrib==2026.6
 pymupdf==1.28.2
 pytesseract==0.3.13
 pywebview==6.2.1
+
+# ── Trim Adidas: BigQuery dependencies ──────────────────────
+google-cloud-bigquery==3.45.1
+google-cloud-bigquery-storage==2.41.0
+google-cloud-core==2.7.0
+google-resumable-media==2.10.2
+google-crc32c==1.8.0
+grpcio==1.84.0
+grpcio-status==1.84.0
+pyarrow==25.0.1
+db-dtypes==1.7.1
