@@ -39,7 +39,7 @@
         inputMode: 'sheets',
         presets: [],
         solList: [],   // SOL list for the currently selected preset
-        solMap:  {},   // { presetName: [solCode, ...] } — full map loaded at startup
+        solMap: {},   // { presetName: [solCode, ...] } — full map loaded at startup
         folderInputs: {},   // { typeId: string (URL or path) }
         isDrive: {},   // { typeId: boolean }
         outputPath: '',
@@ -93,11 +93,11 @@
 
         // Preset SOL preview panel
         dom.presetSolPreview = document.getElementById('preset-sol-preview');
-        dom.presetSolThead   = document.getElementById('preset-sol-thead');
-        dom.presetSolCount   = document.getElementById('preset-sol-count');
-        dom.presetSolTbody   = document.getElementById('preset-sol-tbody');
+        dom.presetSolThead = document.getElementById('preset-sol-thead');
+        dom.presetSolCount = document.getElementById('preset-sol-count');
+        dom.presetSolTbody = document.getElementById('preset-sol-tbody');
         dom.mergerToolbarTitle = document.getElementById('merger-toolbar-title');
-        dom.mergerToolbarIcon  = document.getElementById('merger-toolbar-icon');
+        dom.mergerToolbarIcon = document.getElementById('merger-toolbar-icon');
         dom.mergerModuleSubtitle = document.getElementById('merger-module-subtitle');
         dom.solEntrySourceGroup = document.getElementById('sol-entry-source-group');
         dom.sourceTabs = document.getElementById('source-tabs');
@@ -338,27 +338,27 @@
 
     function enterMergerModule(line = 'PFL') {
         state.currentLine = line;
-        const isRfid        = line === 'RFID HT';
-        const isTrim        = line === 'Trim';
-        const isPflThermal  = line === 'PFL THERMAL';
+        const isRfid = line === 'RFID HT';
+        const isTrim = line === 'Trim';
+        const isPflThermal = line === 'PFL THERMAL';
         // Modules that never use Google Drive (UNC/local only)
-        const isUncOnly     = isRfid || isTrim || isPflThermal;
+        const isUncOnly = isRfid || isTrim || isPflThermal;
 
         // ── Toolbar ──────────────────────────────────────────────
         const titles = {
-            'PFL':         'PDF Merger (PFL)',
-            'RFID HT':    'PDF Merger (RFID HT)',
-            'Trim':       'Trim Adidas',
-            'PFL THERMAL':'PDF Merger (PFL Thermal)',
+            'PFL': 'PDF Merger (PFL)',
+            'RFID HT': 'PDF Merger (RFID HT)',
+            'Trim': 'Trim Adidas',
+            'PFL THERMAL': 'PDF Merger (PFL Thermal)',
         };
-        const icons  = {
-            'PFL':         '📑',
-            'RFID HT':    '🏷️',
-            'Trim':       '✂️',
-            'PFL THERMAL':'🌡️',
+        const icons = {
+            'PFL': '📑',
+            'RFID HT': '🏷️',
+            'Trim': '✂️',
+            'PFL THERMAL': '🌡️',
         };
-        if (dom.mergerToolbarTitle)  dom.mergerToolbarTitle.textContent  = titles[line] || line;
-        if (dom.mergerToolbarIcon)   dom.mergerToolbarIcon.textContent   = icons[line]  || '📄';
+        if (dom.mergerToolbarTitle) dom.mergerToolbarTitle.textContent = titles[line] || line;
+        if (dom.mergerToolbarIcon) dom.mergerToolbarIcon.textContent = icons[line] || '📄';
         if (dom.mergerModuleSubtitle) dom.mergerModuleSubtitle.textContent = line;
 
         // ── Folder label rename for Trim (Layout → TE Folder) ───
@@ -412,8 +412,8 @@
         window.pywebview.api.get_initial_data(line).then(result => {
             if (result && result.success) {
                 state.presets = result.presets || [];
-                state.solMap   = result.solMap  || {};
-                state.solList  = [];  // cleared; will be set when a preset is chosen
+                state.solMap = result.solMap || {};
+                state.solList = [];  // cleared; will be set when a preset is chosen
                 state.rfidEntries = [];
                 hideError();
 
@@ -1625,6 +1625,48 @@
         dom.toastContainer.appendChild(el);
     }
 
+    function showTracingBenchmarkToast(startTime, endTime) {
+        if (!dom.toastContainer || !startTime || !endTime) return;
+
+        const pad = n => String(n).padStart(2, '0');
+        const formatTime = d => `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+
+        const startStr = formatTime(startTime);
+        const endStr = formatTime(endTime);
+        const diffMs = Math.max(0, endTime.getTime() - startTime.getTime());
+
+        let durationStr = `${(diffMs / 1000).toFixed(2)}s`;
+        if (diffMs >= 60000) {
+            const mins = Math.floor(diffMs / 60000);
+            const secs = ((diffMs % 60000) / 1000).toFixed(1);
+            durationStr = `${mins}m ${secs}s (${(diffMs / 1000).toFixed(2)}s)`;
+        }
+
+        const el = document.createElement('div');
+        el.className = 'toast toast--info';
+        el.style.cssText = 'min-width:280px;display:flex;align-items:flex-start;justify-content:space-between;gap:8px;';
+        el.innerHTML = `
+            <div style="flex:1;">
+                <div style="font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+                    <span>⏱️</span> Tracing Benchmark
+                </div>
+                <div style="font-size:0.82rem;line-height:1.4;">
+                    <div><b>Start Time:</b> <span style="font-family:monospace;">${escHtml(startStr)}</span></div>
+                    <div><b>End Time:</b> <span style="font-family:monospace;">${escHtml(endStr)}</span></div>
+                    <div><b>Duration:</b> <span style="font-family:monospace;font-weight:700;color:var(--accent-primary);">${escHtml(durationStr)}</span></div>
+                </div>
+            </div>
+            <button class="toast-close-btn" style="background:none;border:none;color:var(--text-tertiary);cursor:pointer;font-size:0.9rem;padding:0 4px;align-self:flex-start;" title="Close">✕</button>
+        `;
+
+        el.querySelector('.toast-close-btn').addEventListener('click', () => {
+            el.remove();
+        });
+
+        dom.toastContainer.appendChild(el);
+    }
+
+
     function escHtml(str) {
         return String(str)
             .replace(/&/g, '&amp;')
@@ -1660,10 +1702,10 @@
         dom.adExceptContainer = document.getElementById('ad-exceptions-container');
         dom.adModalCancelBtn = document.getElementById('ad-modal-cancel-btn');
         dom.adRunBtn = document.getElementById('ad-run-btn');
-        dom.adOcrToggleBtn  = document.getElementById('ad-ocr-toggle-btn');
-        dom.adOcrIcon       = document.getElementById('ad-ocr-icon');
-        dom.adOcrLabel      = document.getElementById('ad-ocr-label');
-        dom.adOcrDesc       = document.getElementById('ad-ocr-desc');
+        dom.adOcrToggleBtn = document.getElementById('ad-ocr-toggle-btn');
+        dom.adOcrIcon = document.getElementById('ad-ocr-icon');
+        dom.adOcrLabel = document.getElementById('ad-ocr-label');
+        dom.adOcrDesc = document.getElementById('ad-ocr-desc');
 
         dom.adProgressModal = document.getElementById('auto-detect-progress-modal');
         dom.adProgSol = document.getElementById('ad-prog-sol');
@@ -1794,19 +1836,19 @@
         adState.ocrEnabled = enabled;
         if (!dom.adOcrToggleBtn) return;
         if (enabled) {
-            dom.adOcrIcon.textContent  = '🔍';
+            dom.adOcrIcon.textContent = '🔍';
             dom.adOcrLabel.textContent = 'OCR Mode: ON';
-            dom.adOcrDesc.textContent  = 'Multi-page OCR (Tesseract V2)';
-            dom.adOcrToggleBtn.style.background   = 'rgba(79,70,229,0.12)';
-            dom.adOcrToggleBtn.style.borderColor  = '#4f46e5';
-            dom.adOcrToggleBtn.style.color        = '#4f46e5';
+            dom.adOcrDesc.textContent = 'Multi-page OCR (Tesseract V2)';
+            dom.adOcrToggleBtn.style.background = 'rgba(79,70,229,0.12)';
+            dom.adOcrToggleBtn.style.borderColor = '#4f46e5';
+            dom.adOcrToggleBtn.style.color = '#4f46e5';
         } else {
-            dom.adOcrIcon.textContent  = '⚡';
+            dom.adOcrIcon.textContent = '⚡';
             dom.adOcrLabel.textContent = 'OCR Mode: OFF';
-            dom.adOcrDesc.textContent  = 'Fast 1D barcode only';
-            dom.adOcrToggleBtn.style.background   = 'var(--bg-primary)';
-            dom.adOcrToggleBtn.style.borderColor  = 'var(--border-color)';
-            dom.adOcrToggleBtn.style.color        = 'var(--text-secondary)';
+            dom.adOcrDesc.textContent = 'Fast 1D barcode only';
+            dom.adOcrToggleBtn.style.background = 'var(--bg-primary)';
+            dom.adOcrToggleBtn.style.borderColor = 'var(--border-color)';
+            dom.adOcrToggleBtn.style.color = 'var(--text-secondary)';
         }
     }
 
@@ -1838,7 +1880,7 @@
         // PFL Thermal: hide the OCR toggle in the modal
         const isPflThermal = state.currentLine === 'PFL THERMAL';
         if (dom.adOcrToggleBtn) dom.adOcrToggleBtn.style.display = isPflThermal ? 'none' : '';
-        if (dom.adOcrDesc)      dom.adOcrDesc.style.display      = isPflThermal ? 'none' : '';
+        if (dom.adOcrDesc) dom.adOcrDesc.style.display = isPflThermal ? 'none' : '';
 
         // Show modal
         dom.adModal.classList.add('active');
@@ -1886,6 +1928,7 @@
             });
         }
         window._adActiveSol = null;
+        window._adStartTime = new Date();
 
         window.pywebview.api.run_auto_detect_trim(
             JSON.stringify(solList),
@@ -1978,9 +2021,11 @@
             // PFL Thermal: treat all SOLs as Flag=True (Barcode Range Scan)
             const flagsMap = {};
             solList.forEach(sol => { flagsMap[sol] = true; });
-            flagsJson  = JSON.stringify(flagsMap);
+            flagsJson = JSON.stringify(flagsMap);
             jobMapJson = "{}";
         }
+
+        window._adStartTime = new Date();
 
         window.pywebview.api.run_auto_detect(
             JSON.stringify(solList),
@@ -2032,6 +2077,7 @@
         dom.adProgressModal.classList.remove('active');
 
         if (!result.success) {
+            window._adStartTime = null;
             showToast('❌ Auto Detect failed: ' + (result.error || 'Unknown error'), 'error', 0);
             return;
         }
@@ -2045,19 +2091,19 @@
             }
         }
 
-        const resModal    = document.getElementById('auto-detect-results-modal');
+        const resModal = document.getElementById('auto-detect-results-modal');
         const summaryText = document.getElementById('ad-results-summary-text');
-        const grid        = document.getElementById('ad-results-grid');
+        const grid = document.getElementById('ad-results-grid');
 
         // Store globally so the apply button can access it
         window._adFinalResult = result;
 
         // ── Trim Adidas: rich BQ summary ─────────────────────────
         if (state.currentLine === 'Trim') {
-            const bqMeta    = result.bq_metadata   || {};
-            const missingD  = result.missing_data  || {};
+            const bqMeta = result.bq_metadata || {};
+            const missingD = result.missing_data || {};
             const missingOI = missingD.missing_ordered_item || [];
-            const missingTE = missingD.missing_te           || [];
+            const missingTE = missingD.missing_te || [];
             const allMissing = Array.from(new Set([...missingOI, ...missingTE]));
 
             // Warning banner for SOLs with missing BQ data
@@ -2067,8 +2113,8 @@
                   <div style="background:rgba(255,180,0,0.12);border:1px solid var(--accent-warning,#f59e0b);
                               border-radius:6px;padding:10px 14px;margin-bottom:12px;">
                     <div style="font-weight:700;color:var(--accent-warning,#f59e0b);margin-bottom:4px;">⚠️ Missing BigQuery Data</div>
-                    ${missingOI.length ? `<div style="font-size:0.82rem;margin-bottom:2px;"><b>Missing Ordered Item:</b> ${missingOI.map(s=>`<code style="font-family:monospace;">${escHtml(s)}</code>`).join(', ')}</div>` : ''}
-                    ${missingTE.length  ? `<div style="font-size:0.82rem;"><b>Missing TE list:</b> ${missingTE.map(s=>`<code style="font-family:monospace;">${escHtml(s)}</code>`).join(', ')}</div>` : ''}
+                    ${missingOI.length ? `<div style="font-size:0.82rem;margin-bottom:2px;"><b>Missing Ordered Item:</b> ${missingOI.map(s => `<code style="font-family:monospace;">${escHtml(s)}</code>`).join(', ')}</div>` : ''}
+                    ${missingTE.length ? `<div style="font-size:0.82rem;"><b>Missing TE list:</b> ${missingTE.map(s => `<code style="font-family:monospace;">${escHtml(s)}</code>`).join(', ')}</div>` : ''}
                   </div>`;
             }
             if (result.bq_error) {
@@ -2080,32 +2126,32 @@
             // Build detail table for each SOL
             const solList = Object.keys(result.assembly || {});
             let tableRows = solList.map(sol => {
-                const meta   = bqMeta[sol]  || {};
+                const meta = bqMeta[sol] || {};
                 const svPages = meta.soview_pages || 0;
-                const tePages = meta.te_pages     || 0;
-                const totalP  = svPages + tePages;
+                const tePages = meta.te_pages || 0;
+                const totalP = svPages + tePages;
                 const targetTE = (meta.list_te || []).length;
-                const svFile  = meta.soview_file || '—';
-                const svPath  = meta.soview_path || '';
-                const teFile  = meta.te_file     || '—';
-                const tePath  = meta.te_path     || '';
+                const svFile = meta.soview_file || '—';
+                const svPath = meta.soview_path || '';
+                const teFile = meta.te_file || '—';
+                const tePath = meta.te_path || '';
                 const hasPages = totalP > 0;
                 const previewBtn = hasPages
                     ? `<button class="btn btn--sm btn--secondary ad-preview-btn" data-sol="${escHtml(sol)}"
                               style="font-size:0.75rem;padding:4px 10px;">👁 Preview</button>`
                     : `<span style="color:var(--text-tertiary);font-size:0.75rem;">—</span>`;
                 return `
-                  <tr style="${totalP===0?'opacity:0.5;':''}">
+                  <tr style="${totalP === 0 ? 'opacity:0.5;' : ''}">
                     <td style="padding:8px 10px;font-weight:600;font-family:monospace;font-size:0.82rem;">${escHtml(sol)}</td>
                     <td style="padding:8px 10px;text-align:center;">
-                      ${svPages>0 ? `<span style="color:var(--accent-success);font-weight:600;">${svPages}</span>` : '<span style="color:var(--text-tertiary);">0</span>'}
+                      ${svPages > 0 ? `<span style="color:var(--accent-success);font-weight:600;">${svPages}</span>` : '<span style="color:var(--text-tertiary);">0</span>'}
                       <br><span title="${escHtml(svPath)}" style="font-size:0.72rem;color:var(--text-secondary);cursor:default;" title="${escHtml(svPath)}">${escHtml(svFile)}</span>
                     </td>
                     <td style="padding:8px 10px;text-align:center;">
-                      ${tePages>0 ? `<span style="color:var(--accent-success);font-weight:600;">${tePages}</span>` : '<span style="color:var(--text-tertiary);">0</span>'}
+                      ${tePages > 0 ? `<span style="color:var(--accent-success);font-weight:600;">${tePages}</span>` : '<span style="color:var(--text-tertiary);">0</span>'}
                       <br><span style="font-size:0.72rem;color:var(--text-secondary);cursor:default;" title="${escHtml(tePath)}">${escHtml(teFile)}</span>
                     </td>
-                    <td style="padding:8px 10px;text-align:center;font-weight:600;">${targetTE||'—'}</td>
+                    <td style="padding:8px 10px;text-align:center;font-weight:600;">${targetTE || '—'}</td>
                     <td style="padding:8px 10px;text-align:center;font-weight:700;">${totalP}</td>
                     <td style="padding:8px 10px;text-align:center;">${previewBtn}</td>
                   </tr>`;
@@ -2139,6 +2185,10 @@
             }
 
             resModal.classList.add('active');
+            if (result.tracing_enabled && window._adStartTime) {
+                showTracingBenchmarkToast(window._adStartTime, new Date());
+                window._adStartTime = null;
+            }
             // Wire preview buttons inside the new table
             grid.querySelectorAll('.ad-preview-btn').forEach(btn => {
                 btn.addEventListener('click', () => openPreviewModal(btn.dataset.sol));
@@ -2189,6 +2239,10 @@
 
         // Show Results Modal
         resModal.classList.add('active');
+        if (result.tracing_enabled && window._adStartTime) {
+            showTracingBenchmarkToast(window._adStartTime, new Date());
+            window._adStartTime = null;
+        }
     };
 
     // Bind Auto Detect Results Modal Action Buttons
@@ -2213,6 +2267,7 @@
 
     window._onAutoDetectCancelled = function () {
         dom.adProgressModal.classList.remove('active');
+        window._adStartTime = null;
         showToast('Auto Detect cancelled.', 'info');
     };
 
@@ -2825,14 +2880,15 @@
         }
 
         let html = '';
-        const sortedSols = Object.keys(dedupState.solMapping).sort((a, b) => a.localeCompare(b));
+        const inputSols = parseDedupSolIds();
+        const orderedSols = [
+            ...inputSols.filter(sol => dedupState.solMapping[sol]),
+            ...Object.keys(dedupState.solMapping).filter(sol => !inputSols.includes(sol))
+        ];
 
-        sortedSols.forEach(sol => {
-            let files = dedupState.solMapping[sol] || [];
+        orderedSols.forEach(sol => {
+            const files = dedupState.solMapping[sol] || [];
             if (files.length === 0) return;
-
-            // Sort files alphabetically
-            files = [...files].sort((a, b) => a.name.localeCompare(b.name));
 
             html += '<div class="dedup-sol-group" style="margin-bottom:8px;">';
             html += '<div style="font-size:0.85rem;font-weight:700;color:var(--text-secondary);padding:4px 8px;background:var(--bg-tertiary);border-radius:4px;margin-bottom:4px;">' +
@@ -2912,10 +2968,17 @@
 
         dedupState.solMapping = mapping;
 
-        // Flatten all found files across SOL IDs, deduplicate by path
+        // Flatten all found files across SOL IDs in the exact order entered by the user
+        const inputSols = parseDedupSolIds();
+        const orderedSols = [
+            ...inputSols.filter(sol => mapping[sol]),
+            ...Object.keys(mapping).filter(sol => !inputSols.includes(sol))
+        ];
+
         const seen = new Set();
         const allFiles = [];
-        Object.values(mapping).forEach(files => {
+        orderedSols.forEach(sol => {
+            const files = mapping[sol] || [];
             files.forEach(f => {
                 if (!seen.has(f.path)) {
                     seen.add(f.path);

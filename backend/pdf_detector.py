@@ -291,13 +291,15 @@ def _get_ocr_regex():
 _2D_BARCODE_TYPES = {"QRCODE", "PDF417", "SQCODE", "DATAMATRIX"}
 
 
-def _scan_1d_barcode_top25(img, decode_fn):
+def _scan_1d_barcode(img, decode_fn) -> tuple[str, bool]:
     """
     Scan for a 1D SOL barcode using pyzbar decode_fn:
       1. Scans top 25% first (standard document orientation).
-      2. If not found, falls back to bottom 25% (upside-down scanned pages).
+         If found -> returns (val, False)  (is_upsidedown = False)
+      2. Fallback to bottom 25% (handles 180° upside-down scanned pages).
+         If found -> returns (val, True)   (is_upsidedown = True)
       3. Strictly ignores 2D barcodes (QR codes, DataMatrix, etc.).
-    Returns the SOL string if found and matches pattern, else empty string.
+    Returns: (barcode_val: str, is_upsidedown: bool)
     """
     sol_regex = _get_sol_regex()
 
@@ -320,10 +322,18 @@ def _scan_1d_barcode_top25(img, decode_fn):
     # 1. Try top 25% first (fast path for normal upright pages)
     val = _extract_1d(_crop_top_fraction(img, 0.25))
     if val:
-        return val
+        return val, False
 
     # 2. Fallback to bottom 25% (handles 180° upside-down scanned pages)
-    return _extract_1d(_crop_bottom_fraction(img, 0.25))
+    val_bottom = _extract_1d(_crop_bottom_fraction(img, 0.25))
+    if val_bottom:
+        return val_bottom, True
+
+    return "", False
+
+
+# Backward compatibility alias
+_scan_1d_barcode_top25 = _scan_1d_barcode
 
 
 def _ocr_bottom25(img, pytesseract_mod, ocr_lang: str = "eng"):
@@ -351,6 +361,33 @@ def _ocr_bottom25(img, pytesseract_mod, ocr_lang: str = "eng"):
     crop2 = _pil_upscale(crop, 100, 150)
     x, y = _try(crop2)
     return x, y  # may still be (None, None) → caller uses fallback
+
+
+def _ocr_top25_rotated180(img, pytesseract_mod, ocr_lang: str = "eng"):
+    """
+    OCR the top 25% of an upside-down page:
+      1. Crops the top 25% (where 'Page X of Y' is physically located when inverted).
+      2. Rotates the crop 180 degrees to upright orientation.
+      3. Performs OCR to find 'Page X of Y'.
+    """
+    ocr_regex = _get_ocr_regex()
+    crop = _crop_top_fraction(img, 0.25).rotate(180)
+
+    def _try(c):
+        try:
+            text = pytesseract_mod.image_to_string(c, lang=ocr_lang)
+            for m in ocr_regex.finditer(text):
+                return int(m.group(1)), int(m.group(2))
+        except Exception:
+            pass
+        return None, None
+
+    x, y = _try(crop)
+    if x is not None:
+        return x, y
+    crop2 = _pil_upscale(crop, 100, 150)
+    x, y = _try(crop2)
+    return x, y
 
 
 def _validate_page_xy(x, y, max_y: int = 3):
@@ -510,7 +547,7 @@ def _detect_barcode_soview(
             page_num = i + 1  # 1-based
 
             img = _fitz_page_to_pil(doc[i], _DPI)
-            barcode_val = _scan_1d_barcode_top25(img, pyzbar_decode)
+            barcode_val, is_upsidedown = _scan_1d_barcode(img, pyzbar_decode)
 
             # ── No barcode on this page ───────────────────────────────────────
             if not barcode_val:
@@ -577,11 +614,17 @@ def _detect_barcode_soview(
                     continue
 
                 else:
-                    # OCR Mode: read "Page X of Y" from bottom 25% to determine range.
+                    # OCR Mode: read "Page X of Y" from bottom 25% (or top 25% rotated 180° if inverted)
                     # Backward scan logic is preserved exactly from the original implementation.
                     pages_to_advance = 1
 
-                    ocr_x, ocr_y = _ocr_bottom25(img, pytesseract_mod)
+                    if is_upsidedown:
+                        # Xoay 180 độ + OCR đọc Top 25%
+                        ocr_x, ocr_y = _ocr_top25_rotated180(img, pytesseract_mod)
+                    else:
+                        # Trang xuôi chuẩn: OCR đọc Bottom 25%
+                        ocr_x, ocr_y = _ocr_bottom25(img, pytesseract_mod)
+
                     _, y_val = _validate_page_xy(ocr_x, ocr_y, max_y=3)
 
                     if y_val == 1:
@@ -602,13 +645,13 @@ def _detect_barcode_soview(
 
                             back_img = _fitz_page_to_pil(doc[back_idx], _DPI)
 
-                            # Pre-check: if top 25% has any 1D SOL barcode,
+                            # Pre-check: if page has any 1D SOL barcode,
                             # this page is the start of another SOL → skip OCR.
-                            pre_bc = _scan_1d_barcode_top25(back_img, pyzbar_decode)
+                            pre_bc, _ = _scan_1d_barcode(back_img, pyzbar_decode)
                             if pre_bc:
                                 continue  # New SOL starts here → can't be a sub-page
 
-                            # OCR bottom 25% to verify "Page expected_x of Y"
+                            # OCR bottom 25% to verify "Page expected_x of Y" (mặc định đọc bottom 25% không rotate thêm)
                             bx, by = _ocr_bottom25(back_img, pytesseract_mod)
 
                             if bx is not None and bx == expected_x:

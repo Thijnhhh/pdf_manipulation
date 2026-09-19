@@ -3,6 +3,10 @@
 All notable changes to this project will be documented in this file.
 
 
+## [1.2.1] - 2026-09-19
+### Fixed
+- **PDF Deduplication — SOL Search Order (Layout UQ RFID HT):** Resolved ordering issue where files returned via SOL Search were displayed and processed in incorrect order (JavaScript V8 engine auto-sorted numeric Object keys ascending instead of preserving user input order). Files are now strictly flattened and rendered in the exact top-to-bottom order that SOL IDs were entered in the Textarea input, ensuring combined output pages match the intended sequence.
+
 ## [1.2.0] - 2026-09-16
 ### Added
 - **New Module: Trim Adidas:** Automated pipeline for Adidas trims integrating Google BigQuery to retrieve TE codes, locate SOview PDFs via flexible naming patterns (`SO.pdf`, `SO-line.pdf`, `SO-*-*.pdf`), detect `*TE*` barcodes, match layout files directly by TE code, and merge outputs.

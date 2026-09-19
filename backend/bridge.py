@@ -765,7 +765,7 @@ class BridgeApi:
                     self._eval("window._onAutoDetectCancelled()")
                     return
 
-                payload = _json_str({"success": True, **result})
+                payload = _json_str({"success": True, "tracing_enabled": TRACING_ENABLED, **result})
                 self._eval(f"window._onAutoDetectDone({payload})")
 
             except Exception as exc:
@@ -1191,12 +1191,13 @@ class BridgeApi:
                     return
 
                 payload = _json_str({
-                    "success":      True,
-                    "assembly":     assembly,
-                    "errors":       errors,
-                    "bq_metadata":  bq_metadata,
-                    "missing_data": missing_data,
-                    "bq_error":     bq_error,
+                    "success":         True,
+                    "tracing_enabled": TRACING_ENABLED,
+                    "assembly":        assembly,
+                    "errors":          errors,
+                    "bq_metadata":     bq_metadata,
+                    "missing_data":    missing_data,
+                    "bq_error":        bq_error,
                 })
                 self._eval(f"window._onAutoDetectDone({payload})")
 
