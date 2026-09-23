@@ -18,6 +18,7 @@ Threading model:
 
 from __future__ import annotations
 
+import concurrent.futures
 import functools
 import json
 import os
@@ -955,144 +956,200 @@ class BridgeApi:
                     if so:
                         so_to_sols.setdefault(so, []).append(sol)
 
-                total_soview_files = sum(
-                    len([f for f in soview_files.get(so, []) if f.get("found")])
-                    for so in so_to_sols
-                )
-                completed_sv = 0
-
+                soview_tasks = []
                 for so, sols_for_so in so_to_sols.items():
-                    if self._auto_detect_cancel.is_set():
-                        break
-
                     found_files = [f for f in soview_files.get(so, []) if f.get("found")]
                     for file_idx, file_entry in enumerate(found_files):
-                        if self._auto_detect_cancel.is_set():
-                            break
-                        file_name = file_entry.get("name", "")
-                        file_path = file_entry.get("path", "")
-                        pdf_source = file_entry.get("path") or file_entry.get("bytes")
+                        soview_tasks.append((so, sols_for_so, file_idx, file_entry))
 
-                        _progress({"sol": sols_for_so[0] if sols_for_so else "",
-                                   "typeId": "soview",
-                                   "method": "soview_3pattern",
-                                   "fileName": file_name,
-                                   "currentFile": completed_sv + 1,
-                                   "totalFiles": total_soview_files})
+                total_soview_files = len(soview_tasks)
+                completed_sv = 0
+                total_matched_sv_pages = 0
+                t_sv_phase = time.perf_counter()
 
-                        t_sv_file = time.perf_counter()
-                        try:
-                            page_map = scan_soview_pdf_3patterns(
-                                pdf_source=pdf_source,
-                                target_sols=sols_for_so,
-                                base_so=so,
-                                cancel_event=self._auto_detect_cancel,
-                            )
-                            matched_pages_cnt = 0
-                            for sol, pages in page_map.items():
-                                seen = set((e["fileIdx"], e["pageIndex"]) for e in assembly[sol]["soview"])
-                                for p in pages:
-                                    if (file_idx, p) not in seen:
-                                        assembly[sol]["soview"].append({
-                                            "pageIndex": p,
-                                            "fileIdx":   file_idx,
-                                            "fileName":  file_name,
-                                            "filePath":  file_path,
-                                            "fileId":    file_path or file_name,
-                                            "method":    "soview_3pattern",
-                                        })
-                                        seen.add((file_idx, p))
-                                        matched_pages_cnt += 1
-                                assembly[sol]["soview"].sort(key=lambda e: (e["fileIdx"], e["pageIndex"]))
-                            tracer.record(
-                                phase="5. SOview Scan",
-                                target=file_name,
-                                t0=t_sv_file,
-                                details=f"SO={so}, {len(sols_for_so)} SOLs, {matched_pages_cnt} pages matched",
-                            )
-                        except Exception as exc:
-                            tracer.record(
-                                phase="5. SOview Scan",
-                                target=file_name,
-                                t0=t_sv_file,
-                                details=f"ERROR: {exc}",
-                            )
-                            for sol in sols_for_so:
-                                errors.append({"sol": sol, "typeId": "soview", "error": str(exc)})
-                        completed_sv += 1
-
-                # TE scan: per SOL with valid BQ data
-                for sol in sol_list:
+                def _scan_one_soview_file(task_item):
                     if self._auto_detect_cancel.is_set():
-                        break
+                        return None
+                    so_code, sols_sub, f_idx, f_entry = task_item
+                    f_name = f_entry.get("name", "")
+                    f_path = f_entry.get("path", "")
+                    src = f_entry.get("path") or f_entry.get("bytes")
+                    t0 = time.perf_counter()
+                    try:
+                        # Sequential streaming read over SMB prevents MuPDF's random fseek contention
+                        if isinstance(src, str) and (src.startswith(r"\\") or os.path.isfile(src)):
+                            with open(src, "rb") as fp:
+                                src_bytes = fp.read()
+                            f_entry["bytes"] = src_bytes
+                            pdf_to_scan = src_bytes
+                        else:
+                            pdf_to_scan = src
+
+                        p_map = scan_soview_pdf_3patterns(
+                            pdf_source=pdf_to_scan,
+                            target_sols=sols_sub,
+                            base_so=so_code,
+                            cancel_event=self._auto_detect_cancel,
+                        )
+                        dur = time.perf_counter() - t0
+                        return (so_code, sols_sub, f_idx, f_name, f_path, p_map, dur, None)
+                    except Exception as exc:
+                        dur = time.perf_counter() - t0
+                        return (so_code, sols_sub, f_idx, f_name, f_path, {}, dur, exc)
+
+                if soview_tasks:
+                    max_sv_workers = min(8, max(1, total_soview_files))
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=max_sv_workers) as executor:
+                        future_to_task = {
+                            executor.submit(_scan_one_soview_file, task): task
+                            for task in soview_tasks
+                        }
+                        for future in concurrent.futures.as_completed(future_to_task):
+                            if self._auto_detect_cancel.is_set():
+                                executor.shutdown(wait=False, cancel_futures=True)
+                                break
+                            res = future.result()
+                            if res is None:
+                                continue
+                            so_code, sols_sub, f_idx, f_name, f_path, page_map, dur, exc = res
+                            completed_sv += 1
+
+                            _progress({"sol": sols_sub[0] if sols_sub else "",
+                                       "typeId": "soview",
+                                       "method": "soview_3pattern",
+                                       "fileName": f_name,
+                                       "currentFile": completed_sv,
+                                       "totalFiles": total_soview_files})
+
+                            if exc is not None:
+                                for sol in sols_sub:
+                                    errors.append({"sol": sol, "typeId": "soview", "error": str(exc)})
+                                if TRACING_ENABLED:
+                                    print(f"[TRIM] >> 5. SOview Scan (File) | {f_name:<32} | {dur*1000:>8.1f}ms (ERROR: {exc})")
+                            else:
+                                matched_pages_cnt = 0
+                                for sol, pages in page_map.items():
+                                    seen = set((e["fileIdx"], e["pageIndex"]) for e in assembly[sol]["soview"])
+                                    for p in pages:
+                                        if (f_idx, p) not in seen:
+                                            assembly[sol]["soview"].append({
+                                                "pageIndex": p,
+                                                "fileIdx":   f_idx,
+                                                "fileName":  f_name,
+                                                "filePath":  f_path,
+                                                "fileId":    f_path or f_name,
+                                                "method":    "soview_3pattern",
+                                            })
+                                            seen.add((f_idx, p))
+                                            matched_pages_cnt += 1
+                                            total_matched_sv_pages += 1
+                                    assembly[sol]["soview"].sort(key=lambda e: (e["fileIdx"], e["pageIndex"]))
+                                if TRACING_ENABLED:
+                                    print(f"[TRIM] >> 5. SOview Scan (File) | {f_name:<32} | {dur*1000:>8.1f}ms (SO={so_code}, {matched_pages_cnt} pages)")
+
+                    tracer.record(
+                        phase="5. SOview Scan",
+                        target=f"{total_soview_files} files ({max_sv_workers} workers)",
+                        t0=t_sv_phase,
+                        details=f"{total_matched_sv_pages} pages matched across {len(so_to_sols)} SOs",
+                    )
+
+                # ── Stage 5b: TE scan (Grouped by ordered_item) ───────────
+                # Build map: ordered_item -> { te_code: [sol1, sol2, ...] }
+                oi_to_te_sols: dict[str, dict[str, list[str]]] = {}
+                for sol in sol_list:
                     meta = sol_metadata.get(sol, {})
                     ordered_item = meta.get("ordered_item")
                     list_te      = meta.get("list_te", [])
+                    if ordered_item and list_te:
+                        te_dict = oi_to_te_sols.setdefault(ordered_item, {})
+                        for te in list_te:
+                            te_dict.setdefault(te, []).append(sol)
 
-                    if not ordered_item or not list_te:
-                        continue  # Missing BQ data → skip TE scan
+                total_te_ois = len(oi_to_te_sols)
+                completed_oi = 0
+                total_te_matched = 0
+                total_te_files_scanned = 0
+                t_te_phase = time.perf_counter()
 
-                    # Find TE files for this ordered_item (sorted newest first)
+                for ordered_item, te_to_sols in oi_to_te_sols.items():
+                    if self._auto_detect_cancel.is_set():
+                        break
+
                     te_found_files = [f for f in te_files.get(ordered_item, []) if f.get("found")]
-                    if not te_found_files:
-                        continue
-
-                    te_remaining = list(list_te)
+                    te_remaining = set(te_to_sols.keys())
                     for te_file_idx, te_file_entry in enumerate(te_found_files):
                         if self._auto_detect_cancel.is_set():
                             break
                         if not te_remaining:
-                            break
+                            break  # Early exit: all TEs for this ordered_item found!
 
                         te_file_name = te_file_entry.get("name", "")
                         te_file_path = te_file_entry.get("path", "")
-                        te_pdf_source = te_file_entry.get("path") or te_file_entry.get("bytes")
+                        te_pdf_source = te_file_entry.get("bytes") or te_file_entry.get("path")
+                        if isinstance(te_pdf_source, str) and (te_pdf_source.startswith(r"\\") or os.path.isfile(te_pdf_source)):
+                            try:
+                                with open(te_pdf_source, "rb") as fp:
+                                    te_file_entry["bytes"] = fp.read()
+                                te_pdf_source = te_file_entry["bytes"]
+                            except Exception:
+                                pass
 
-                        _progress({"sol": sol,
+                        first_sol = te_to_sols[next(iter(te_remaining))][0] if te_remaining else ""
+                        _progress({"sol": first_sol,
                                    "typeId": "layout",
                                    "method": "te_barcode_scan",
                                    "fileName": te_file_name,
-                                   "currentFile": 1, "totalFiles": len(te_found_files)})
+                                   "currentFile": completed_oi + 1,
+                                   "totalFiles": total_te_ois})
 
                         t_te_file = time.perf_counter()
+                        total_te_files_scanned += 1
                         try:
                             te_page_map = scan_te_pdf_barcode(
                                 pdf_source=te_pdf_source,
-                                te_codes_needed=te_remaining,
+                                te_codes_needed=list(te_remaining),
                                 cancel_event=self._auto_detect_cancel,
                             )
                             te_matched_cnt = 0
-                            seen_te = set((e["fileIdx"], e["pageIndex"]) for e in assembly[sol]["layout"])
                             for te_code, page_num in te_page_map.items():
-                                if (te_file_idx, page_num) not in seen_te:
-                                    assembly[sol]["layout"].append({
-                                        "pageIndex": page_num,
-                                        "fileIdx":   te_file_idx,
-                                        "fileName":  te_file_name,
-                                        "filePath":  te_file_path,
-                                        "fileId":    te_file_path or te_file_name,
-                                        "method":    "te_barcode_scan",
-                                        "teCode":    te_code,
-                                    })
-                                    seen_te.add((te_file_idx, page_num))
-                                    te_matched_cnt += 1
-                                if te_code in te_remaining:
-                                    te_remaining.remove(te_code)
-                            assembly[sol]["layout"].sort(key=lambda e: (e["fileIdx"], e["pageIndex"]))
-                            tracer.record(
-                                phase="6. TE Scan",
-                                target=te_file_name,
-                                t0=t_te_file,
-                                details=f"SOL={sol}, OI={ordered_item}, {te_matched_cnt} TEs found",
-                            )
+                                target_sols = te_to_sols.get(te_code, [])
+                                for s in target_sols:
+                                    seen_te = set((e["fileIdx"], e["pageIndex"]) for e in assembly[s]["layout"])
+                                    if (te_file_idx, page_num) not in seen_te:
+                                        assembly[s]["layout"].append({
+                                            "pageIndex": page_num,
+                                            "fileIdx":   te_file_idx,
+                                            "fileName":  te_file_name,
+                                            "filePath":  te_file_path,
+                                            "fileId":    te_file_path or te_file_name,
+                                            "method":    "te_barcode_scan",
+                                            "teCode":    te_code,
+                                        })
+                                        seen_te.add((te_file_idx, page_num))
+                                        assembly[s]["layout"].sort(key=lambda e: (e["fileIdx"], e["pageIndex"]))
+                                te_matched_cnt += 1
+                                total_te_matched += 1
+                                te_remaining.discard(te_code)
+
+                            if TRACING_ENABLED:
+                                dur_te_ms = (time.perf_counter() - t_te_file) * 1000
+                                print(f"[TRIM] >> 6. TE Scan (File)     | {te_file_name:<32} | {dur_te_ms:>8.1f}ms (OI={ordered_item}, {te_matched_cnt} TEs)")
                         except Exception as exc:
-                            tracer.record(
-                                phase="6. TE Scan",
-                                target=te_file_name,
-                                t0=t_te_file,
-                                details=f"ERROR: {exc}",
-                            )
-                            errors.append({"sol": sol, "typeId": "layout", "error": str(exc)})
+                            if TRACING_ENABLED:
+                                dur_te_ms = (time.perf_counter() - t_te_file) * 1000
+                                print(f"[TRIM] >> 6. TE Scan (File)     | {te_file_name:<32} | {dur_te_ms:>8.1f}ms (ERROR: {exc})")
+                            for s in list(set(s for sols in te_to_sols.values() for s in sols)):
+                                errors.append({"sol": s, "typeId": "layout", "error": str(exc)})
+
+                    completed_oi += 1
+
+                tracer.record(
+                    phase="6. TE Scan",
+                    target=f"{total_te_ois} OIs ({total_te_files_scanned} files)",
+                    t0=t_te_phase,
+                    details=f"{total_te_matched} TEs matched across {total_te_ois} ordered items",
+                )
 
                 # ── Stage 6: Extract matched pages to RAM cache ───────────
                 t_ram = time.perf_counter()
@@ -1100,57 +1157,61 @@ class BridgeApi:
                 soview_batched = {so: soview_files.get(so, []) for so in so_to_sols}
                 te_batched     = te_files  # keyed by ordered_item; reused by extract step below
 
-                for sol, types_dict in assembly.items():
-                    so = parse_so(sol)
-                    for type_id, items in types_dict.items():
-                        if not items:
-                            continue
-                        ram_key = f"{sol}_{type_id}"
-                        out_doc = fitz.open()
-                        opened_docs: dict = {}
+                opened_docs: dict = {}
+                try:
+                    for sol, types_dict in assembly.items():
+                        so = parse_so(sol)
+                        for type_id, items in types_dict.items():
+                            if not items:
+                                continue
+                            ram_key = f"{sol}_{type_id}"
+                            out_doc = fitz.open()
+                            try:
+                                if type_id == "soview":
+                                    found_files_for_so = [f for f in soview_batched.get(so, []) if f.get("found")]
+                                else:
+                                    # layout/TE: find files by ordered_item
+                                    oi = sol_metadata.get(sol, {}).get("ordered_item")
+                                    found_files_for_so = [f for f in te_batched.get(oi, []) if f.get("found")] if oi else []
+
+                                for e in items:
+                                    fidx = e.get("fileIdx", 0)
+                                    p    = e.get("pageIndex")
+                                    f_entry = found_files_for_so[fidx] if 0 <= fidx < len(found_files_for_so) else {}
+                                    # Prioritize in-memory bytes over UNC network path
+                                    pdf_source = f_entry.get("bytes") or f_entry.get("path") or e.get("filePath")
+                                    if not pdf_source:
+                                        continue
+
+                                    file_key = f_entry.get("path") or f_entry.get("name") or str(fidx)
+                                    if file_key not in opened_docs:
+                                        if isinstance(pdf_source, (bytes, bytearray)):
+                                            opened_docs[file_key] = fitz.open(stream=pdf_source, filetype="pdf")
+                                        else:
+                                            # Fallback: sequential read into RAM before opening with fitz
+                                            with open(pdf_source, "rb") as fp:
+                                                b = fp.read()
+                                            f_entry["bytes"] = b
+                                            opened_docs[file_key] = fitz.open(stream=b, filetype="pdf")
+
+                                    src_doc = opened_docs.get(file_key)
+                                    if src_doc and p is not None:
+                                        page_idx_0based = p - 1
+                                        if 0 <= page_idx_0based < src_doc.page_count:
+                                            out_doc.insert_pdf(src_doc, from_page=page_idx_0based, to_page=page_idx_0based)
+
+                                if out_doc.page_count > 0:
+                                    AUTO_DETECT_RAM_CACHE[ram_key] = out_doc.tobytes(deflate=False, garbage=0)
+                            except Exception as exc:
+                                print(f"[run_auto_detect_trim] RAM extract {sol}/{type_id}: {exc}")
+                            finally:
+                                out_doc.close()
+                finally:
+                    for d in opened_docs.values():
                         try:
-                            if type_id == "soview":
-                                found_files_for_so = [f for f in soview_batched.get(so, []) if f.get("found")]
-                            else:
-                                # layout/TE: find files by ordered_item
-                                oi = sol_metadata.get(sol, {}).get("ordered_item")
-                                found_files_for_so = [f for f in te_batched.get(oi, []) if f.get("found")] if oi else []
-
-                            for e in items:
-                                fidx = e.get("fileIdx", 0)
-                                p    = e.get("pageIndex")
-                                pdf_source = None
-                                if 0 <= fidx < len(found_files_for_so):
-                                    pdf_source = found_files_for_so[fidx].get("path") or found_files_for_so[fidx].get("bytes")
-                                if not pdf_source and e.get("filePath"):
-                                    pdf_source = e.get("filePath")
-                                if not pdf_source:
-                                    continue
-
-                                cache_key = (fidx, pdf_source if isinstance(pdf_source, str) else id(pdf_source))
-                                if cache_key not in opened_docs:
-                                    if isinstance(pdf_source, (bytes, bytearray)):
-                                        opened_docs[cache_key] = fitz.open(stream=pdf_source, filetype="pdf")
-                                    else:
-                                        opened_docs[cache_key] = fitz.open(pdf_source)
-
-                                src_doc = opened_docs.get(cache_key)
-                                if src_doc and p is not None:
-                                    page_idx_0based = p - 1
-                                    if 0 <= page_idx_0based < src_doc.page_count:
-                                        out_doc.insert_pdf(src_doc, from_page=page_idx_0based, to_page=page_idx_0based)
-
-                            if out_doc.page_count > 0:
-                                AUTO_DETECT_RAM_CACHE[ram_key] = out_doc.tobytes(garbage=3, deflate=True)
-                        except Exception as exc:
-                            print(f"[run_auto_detect_trim] RAM extract {sol}/{type_id}: {exc}")
-                        finally:
-                            for d in opened_docs.values():
-                                try:
-                                    d.close()
-                                except Exception:
-                                    pass
-                            out_doc.close()
+                            d.close()
+                        except Exception:
+                            pass
 
                 total_ram_bytes = sum(len(b) for b in AUTO_DETECT_RAM_CACHE.values())
                 tracer.record(

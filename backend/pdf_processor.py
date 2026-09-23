@@ -102,6 +102,97 @@ def generate_merged_filename(
     return merged_name
 
 
+def _is_file_locked(filepath: str) -> bool:
+    """
+    Check if a file exists and is currently locked by another application
+    (such as Adobe Acrobat Reader, Foxit Reader, or a browser).
+    """
+    if not os.path.exists(filepath):
+        return False
+    try:
+        with open(filepath, "r+b"):
+            pass
+        return False
+    except OSError:
+        return True
+
+
+def save_pdf_safely(
+    doc: fitz.Document,
+    output_folder: str,
+    base_name: str,
+    garbage: int = 1,
+    deflate: bool = True,
+    max_attempts: int = 100,
+) -> str:
+    """
+    Save a fitz.Document safely to output_folder.
+    - If target file exists and is locked (e.g. open in Adobe Acrobat),
+      automatically appends a numeric suffix: 'base_name (1).pdf', 'base_name (2).pdf'...
+    - Strictly guarantees the resulting full path never exceeds Windows MAX_PATH (259 chars).
+      When adding suffix ' (i)', the base name is cleanly truncated so that
+      len(abs(full_path)) <= 259 is mathematically guaranteed.
+    - Returns the final path that was successfully saved.
+    """
+    os.makedirs(output_folder, exist_ok=True)
+    abs_folder = os.path.abspath(output_folder)
+
+    # Windows MAX_PATH is 260; usable length before null terminator is 259.
+    _WINDOWS_MAX_PATH = 259
+    _EXT = ".pdf"
+    _EXT_LEN = len(_EXT)  # 4
+
+    # Clean base name (strip .pdf if caller included it)
+    clean_base = base_name[:-4] if base_name.lower().endswith(".pdf") else base_name
+    clean_base = clean_base.strip()
+
+    # Remaining character budget for filename without extension
+    remaining_budget = _WINDOWS_MAX_PATH - len(abs_folder) - 1 - _EXT_LEN
+    effective_max = max(10, min(255, remaining_budget))
+
+    # 1. First attempt: exact base name without suffix
+    candidate_base = clean_base[:effective_max].rstrip(" ,-_")
+    if not candidate_base:
+        candidate_base = "output"
+    candidate_path = os.path.join(output_folder, f"{candidate_base}{_EXT}")
+
+    if not _is_file_locked(candidate_path):
+        try:
+            doc.save(candidate_path, garbage=garbage, deflate=deflate)
+            return candidate_path
+        except Exception as exc:
+            err_str = str(exc).lower()
+            if not ("cannot remove file" in err_str or "permission denied" in err_str or isinstance(exc, PermissionError)):
+                raise
+
+    # 2. File is locked or couldn't be overwritten: try 'base_name (1).pdf', 'base_name (2).pdf'...
+    for i in range(1, max_attempts + 1):
+        suffix = f" ({i})"
+        allowed_base_len = max(5, effective_max - len(suffix))
+        truncated_base = clean_base[:allowed_base_len].rstrip(" ,-_")
+        if not truncated_base:
+            truncated_base = "output"[:allowed_base_len].rstrip(" ,-_")
+
+        new_name = f"{truncated_base}{suffix}"
+        new_path = os.path.join(output_folder, f"{new_name}{_EXT}")
+
+        if _is_file_locked(new_path):
+            continue
+
+        try:
+            doc.save(new_path, garbage=garbage, deflate=deflate)
+            return new_path
+        except Exception as exc:
+            err_str = str(exc).lower()
+            if "cannot remove file" in err_str or "permission denied" in err_str or isinstance(exc, PermissionError):
+                continue
+            raise
+
+    raise PermissionError(
+        f"Unable to save PDF file after {max_attempts} attempts: file and its variants are locked by another application."
+    )
+
+
 
 # ── Internal helpers ─────────────────────────────────────────
 
@@ -265,8 +356,13 @@ def execute_export(
 
             if out_doc.page_count > 0:
                 merged_name = generate_merged_filename(sol_codes, output_path=output_path)
-                out_path = os.path.join(output_path, f"{merged_name}.pdf")
-                out_doc.save(out_path, garbage=3, deflate=True)
+                out_path = save_pdf_safely(
+                    doc=out_doc,
+                    output_folder=output_path,
+                    base_name=merged_name,
+                    garbage=1,
+                    deflate=True,
+                )
                 output_files.append(out_path)
             out_doc.close()
 
@@ -291,8 +387,13 @@ def execute_export(
                 
                 if out_doc.page_count > 0:
                     safe_sol = "".join(c for c in sol if c.isalnum() or c in "-_")
-                    saved_path = os.path.join(output_path, f"{safe_sol}.pdf")
-                    out_doc.save(saved_path, garbage=3, deflate=True)
+                    saved_path = save_pdf_safely(
+                        doc=out_doc,
+                        output_folder=output_path,
+                        base_name=safe_sol,
+                        garbage=1,
+                        deflate=True,
+                    )
                     
                 out_doc.close()
                 _report(1) # Report per SOL

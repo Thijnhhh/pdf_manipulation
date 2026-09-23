@@ -3,11 +3,11 @@
 ---
 
 ## Document Information
-* **Document Version:** 1.2.0
+* **Document Version:** 1.2.2
 * **Target Application:** PDF Manipulation Tool Desktop Edition
 * **Target Operating System:** Microsoft Windows 10 / 11 (64-bit)
 * **Author / Ownership:** Thinh Phung / Avery Dennison (AD) RFID FRU Team
-* **Last Updated:** 2026-09-16
+* **Last Updated:** 2026-09-23
 
 ---
 
@@ -736,6 +736,53 @@ To bypass Windows Network Share (UNC) SMB latency caused by deep recursive `rglo
 * Uses non-recursive `os.scandir` iteration on root/sub-folders.
 * Pre-filters directory names against target SO prefixes (e.g. matching date/month folders).
 * Eliminates redundant network roundtrips, reducing multi-folder discovery time from 15–20s down to <1s.
+* **v1.2.2 — Inline mtime Caching:** `st_mtime` is now read from `entry.stat()` directly during the `scandir` walk (already in the OS directory cache) and stored in `item["mtime"]`. The `sort_by_mtime_desc` sort lambda uses this cached field instead of re-issuing `os.path.getmtime()`, eliminating one additional SMB syscall per discovered file.
+
+---
+
+#### 8. `_extract_to_ram` — Selective Parallel Pre-fetch (`backend/pdf_detector.py`)
+
+After all SOL × type_id detection tasks complete, `_extract_to_ram` serializes matched pages into `AUTO_DETECT_RAM_CACHE` as `bytes`. As of v1.2.2, this uses a **3-phase selective parallel pre-fetch** strategy:
+
+**Phase 1 — Selective Collection:**
+Traverses `assembly` to build a deduplicated `needed_files: dict[str, dict]` containing only source PDF paths that have matched pages. Files already carrying in-memory `bytes` (e.g. Google Drive temp files previously downloaded) are skipped entirely — no redundant I/O.
+
+**Phase 2 — Parallel Binary Load:**
+All unique network/local paths in `needed_files` are loaded **concurrently** via `ThreadPoolExecutor(max_workers=min(16, cpu*2))`. Each worker:
+```python
+with open(pdf_path, "rb") as fp:
+    file_entry["bytes"] = fp.read()  # stored as shared reference into batched_files
+```
+Because the GIL does not block I/O threads, all SMB connections are negotiated simultaneously. For a typical RFID HT batch (53 unique PDFs across UNC), this reduces Phase 2 wall-clock time from ~37s (serial) to ~3–5s (parallel).
+
+If a single file fails to load (network disconnect, exclusive lock), the error is printed as a warning and that file_entry retains no `bytes`. Phase 3 falls back to a sequential re-read attempt for that entry only, preserving all other SOLs.
+
+**Phase 3 — In-RAM Slicing:**
+The `opened_docs` hoisting loop runs purely from memory (`fitz.open(stream=bytes)`). No network I/O occurs. Serialization uses `tobytes(deflate=False, garbage=0)` for maximum CPU throughput.
+
+| Batch | Before | After |
+| :--- | :--- | :--- |
+| RFID HT (53 files, ~74 MB) | ~37,000 ms | ~3,000–5,000 ms |
+| PFL / PFL Thermal (Drive temp) | already fast (bytes cached) | unchanged |
+
+---
+
+#### 9. `save_pdf_safely()` — Safe Output Writer (`backend/pdf_processor.py`)
+
+Replaces all raw `doc.save(path, ...)` calls in the export pipeline with a safe wrapper that handles two common production failure modes:
+
+1. **File-Lock Conflict:** If the target `.pdf` is open in Adobe Acrobat, Foxit Reader, or a browser, `doc.save()` raises `PermissionError`. `save_pdf_safely` detects the lock via `_is_file_locked()` (a non-destructive `r+b` probe) and auto-increments the output name: `base.pdf` → `base (1).pdf` → `base (2).pdf` ... up to 100 attempts before re-raising.
+
+2. **Windows MAX_PATH Violation:** Windows enforces a 259-character absolute path limit. When an auto-increment suffix `(i)` is appended, the function mathematically truncates the base name so the total path never exceeds 259 characters:
+```python
+allowed_base_len = max(5, effective_max - len(suffix))
+truncated_base = clean_base[:allowed_base_len].rstrip(" ,-_")
+```
+
+Adoption scope:
+* `execute_export` — merge mode and split-per-SOL mode
+* `deduplicate_pdf` (single file deduplication)
+* `deduplicate_batch` (combined output file)
 
 ---
 
@@ -768,8 +815,9 @@ To bypass Windows Network Share (UNC) SMB latency caused by deep recursive `rglo
 ### 4.4 Storage & Resource Management
 
 #### 1. In-Memory RAM Caches
-* `AUTO_DETECT_RAM_CACHE`: A global dictionary mapping `"{sol}_{typeId}"` to serialized `bytes` of pre-extracted PyMuPDF documents. When exporting from Auto Detect, documents are written directly from RAM, eliminating redundant disk reads.
+* `AUTO_DETECT_RAM_CACHE`: A global dictionary mapping `"{sol}_{typeId}"` to serialized `bytes` of pre-extracted PyMuPDF documents. Populated by `_extract_to_ram` (PDF Merger) using **Selective Parallel Pre-fetch** (v1.2.2). When exporting from Auto Detect, documents are written directly from RAM, eliminating redundant disk reads.
 * `_RESOLVED_FILES_CACHE`: Global dictionary storing file descriptors, paths, and downloaded byte buffers to prevent duplicate network roundtrips.
+* `file_entry["bytes"]`: Per-file in-memory buffer stored inside `batched_files` entries. Shared by reference across all SOLs and phases — set once by Phase 2 of `_extract_to_ram`, reused by Phase 3 and subsequent exports without re-reading from network.
 * Explicit Deallocation: Calling `clear_auto_detect_ram_cache()` purges all serialized document buffers from memory. All PyMuPDF document instances are managed using `try ... finally: doc.close()` blocks to guarantee immediate native memory release.
 
 #### 2. Temporary Directory Lifecycle (`%TEMP%`)

@@ -43,6 +43,8 @@ import re
 import ctypes
 from typing import Callable, Optional
 
+from backend.pdf_processor import save_pdf_safely
+
 import pymupdf as fitz
 from PIL import Image
 from pyzbar.pyzbar import decode
@@ -408,9 +410,14 @@ def deduplicate_pdf(
         if kept_count > 0:
             basename = os.path.basename(pdf_path)
             name, ext = os.path.splitext(basename)
-            output_name = f"(Dedup) {name}{ext}"
-            output_path = os.path.join(output_folder, output_name)
-            out_doc.save(output_path, garbage=3, deflate=True)
+            output_name = f"(Dedup) {name}"
+            output_path = save_pdf_safely(
+                doc=out_doc,
+                output_folder=output_folder,
+                base_name=output_name,
+                garbage=3,
+                deflate=True,
+            )
         out_doc.close()
 
     return {
@@ -470,7 +477,15 @@ def deduplicate_batch(
 
         # Write combined output once at the end
         if combined_doc.page_count > 0 and combined_output_path:
-            combined_doc.save(combined_output_path, garbage=3, deflate=True)
+            comb_folder = os.path.dirname(combined_output_path)
+            comb_base = os.path.basename(combined_output_path)
+            combined_output_path = save_pdf_safely(
+                doc=combined_doc,
+                output_folder=comb_folder,
+                base_name=comb_base,
+                garbage=3,
+                deflate=True,
+            )
         combined_doc.close()
 
     else:

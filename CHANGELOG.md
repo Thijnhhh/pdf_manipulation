@@ -3,6 +3,23 @@
 All notable changes to this project will be documented in this file.
 
 
+## [1.2.2] - 2026-09-23
+### Added
+- **`save_pdf_safely()` — Safe Output Writer (`pdf_processor.py`):** New utility replacing all raw `doc.save()` calls throughout the export pipeline. Automatically detects file-lock conflicts (e.g. PDF open in Adobe Acrobat / Foxit Reader) and appends an auto-incrementing numeric suffix `(1)`, `(2)`... up to 100 attempts before raising `PermissionError`. Strictly enforces Windows MAX_PATH (259 characters) by mathematically truncating the base name before appending the suffix. Adopted by: `execute_export` (merge & split), `deduplicate_pdf`, and `deduplicate_batch`.
+- **`_is_file_locked()` helper (`pdf_processor.py`):** Internal helper used by `save_pdf_safely` to probe whether an existing file is exclusively locked by another process via a non-destructive `r+b` open attempt.
+
+### Changed
+- **`_extract_to_ram` — Selective Parallel Pre-fetch (`pdf_detector.py`):** Migrated from serial network I/O to a **3-phase** architecture:
+  - *Phase 1 — Collect:* Traverses `assembly` to build a deduplicated `needed_files` dict containing only files with matched pages. Skips entries already buffered in memory (e.g. Google Drive temp files).
+  - *Phase 2 — Parallel Load:* All required network/local PDFs are loaded **concurrently** via `ThreadPoolExecutor(max_workers=min(16, cpu*2))`. Each worker writes the file bytes directly into the shared `file_entry["bytes"]` so subsequent SOLs reuse the buffer without a second I/O call.
+  - *Phase 3 — In-RAM Slicing:* The existing `fitz.open(stream=bytes) → insert_pdf → tobytes` loop runs entirely from memory with zero network I/O. Reduces the `4. RAM Extraction` stage from ~37s down to ~3–5s for RFID HT batches.
+- **`run_auto_detect_all` — Layout File Byte-Caching (`pdf_detector.py`):** When verifying PFL Layout page geometry (A4 size check), file source priority is now `bytes → path` (was `path → bytes`), and the file is read into `file_entry["bytes"]` via binary stream read to avoid repeated UNC round-trips. Tracer log now reports RAM Cache size in KB.
+- **`run_auto_detect_trim` — SOview Scan Parallelization (`bridge.py`):** Refactored SOview scan stage to use `ThreadPoolExecutor(max_workers=8)`, scanning all SOview files concurrently. Result futures are collected via `as_completed` with proper cancel handling.
+- **`run_auto_detect_trim` — TE Scan Restructuring (`bridge.py`):** TE scan loop now groups SOLs by `ordered_item` into `oi_to_te_sols` map, processing each `ordered_item` group once with early-exit when all TE codes for that group are found. Fixes duplicate file reads and improves TE scan throughput for multi-SOL orders.
+- **`find_all_pdfs_local_batch` — Inline mtime Caching (`file_resolver.py`):** `st_mtime` is now read from `entry.stat()` (already available in `scandir` cache) and stored in `item["mtime"]`. The `sort_by_mtime_desc` sort lambda reads from the cached field instead of calling `os.path.getmtime()` a second time, eliminating one additional SMB network syscall per file.
+- **`deduplicate_pdf` & `deduplicate_batch` (`pdf_deduplicator.py`):** Migrated from `doc.save()` to `save_pdf_safely()` to handle file-lock edge cases and enforce MAX_PATH compliance.
+- **`TRACING_ENABLED = False` (`bridge.py`):** Disabled bridge function execution tracing for production release.
+
 ## [1.2.1] - 2026-09-19
 ### Fixed
 - **PDF Deduplication — SOL Search Order (Layout UQ RFID HT):** Resolved ordering issue where files returned via SOL Search were displayed and processed in incorrect order (JavaScript V8 engine auto-sorted numeric Object keys ascending instead of preserving user input order). Files are now strictly flattened and rendered in the exact top-to-bottom order that SOL IDs were entered in the Textarea input, ensuring combined output pages match the intended sequence.

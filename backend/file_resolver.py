@@ -265,12 +265,17 @@ def find_all_pdfs_local_batch(
                                 subdirs.append(entry.path)
                             elif entry.is_file(follow_symlinks=False) and entry.name.lower().endswith(".pdf"):
                                 f_name = entry.name
+                                try:
+                                    f_mtime = entry.stat().st_mtime
+                                except OSError:
+                                    f_mtime = 0.0
+
                                 if match_prefix_8:
                                     prefix = f_name[:8].lower()
                                     if prefix in lower_job_map:
                                         orig_so = lower_job_map[prefix]
                                         f_path = entry.path
-                                        item = {"found": True, "file_id": f_path, "path": f_path, "name": f_name}
+                                        item = {"found": True, "file_id": f_path, "path": f_path, "name": f_name, "mtime": f_mtime}
                                         with results_lock:
                                             _RESOLVED_FILES_CACHE[f_path] = item
                                             results[orig_so].append(item)
@@ -279,7 +284,7 @@ def find_all_pdfs_local_batch(
                                     for so_lower, orig_so in lower_so_map.items():
                                         if so_lower in name_lower:
                                             f_path = entry.path
-                                            item = {"found": True, "file_id": f_path, "path": f_path, "name": f_name}
+                                            item = {"found": True, "file_id": f_path, "path": f_path, "name": f_name, "mtime": f_mtime}
                                             with results_lock:
                                                 _RESOLVED_FILES_CACHE[f_path] = item
                                                 results[orig_so].append(item)
@@ -307,7 +312,7 @@ def find_all_pdfs_local_batch(
     for so in results:
         if sort_by_mtime_desc:
             results[so].sort(
-                key=lambda x: os.path.getmtime(x["path"]) if x.get("path") and os.path.exists(x["path"]) else 0,
+                key=lambda x: x.get("mtime") if x.get("mtime") is not None else (os.path.getmtime(x["path"]) if x.get("path") and os.path.exists(x["path"]) else 0),
                 reverse=True,
             )
         else:
