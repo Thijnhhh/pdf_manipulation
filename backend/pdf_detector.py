@@ -1192,8 +1192,21 @@ def run_auto_detect_all(
 
             file_result = uf["file_result"]
             file_name   = file_result.get("name", "")
-            pdf_source  = file_result.get("bytes") or file_result.get("path")
             all_sols    = uf["sols"]
+
+            # ── 1A: Single-pass RAM preload ──────────────────────────────────────────────
+            # Nạp toàn bộ file vào RAM ngay tại đây (1 lần duy nhất qua mạng).
+            # Nếu bytes đã có sẵn (Drive file đã download trước), dùng luôn.
+            if not file_result.get("bytes"):
+                _src_path = file_result.get("path", "")
+                if _src_path and (os.path.isfile(_src_path) or _src_path.startswith(r"\\\\")):
+                    try:
+                        with open(_src_path, "rb") as _fp:
+                            file_result["bytes"] = _fp.read()
+                    except Exception as _load_exc:
+                        print(f"[preload] {file_name}: {_load_exc}")
+
+            pdf_source = file_result.get("bytes") or file_result.get("path")
 
             def make_progress_cb(f_name=file_name, t_id=type_id, c=completed_unique, tot=total_unique):
                 def _cb(method):
@@ -1261,6 +1274,12 @@ def run_auto_detect_all(
                     details=f"file {completed_unique + 1}/{total_unique}, method={method_used}, {total_pages_matched} pgs ({len(all_sols)} SOLs)"
                 )
 
+                # ── 1B: Early Eviction — xóa bytes ngay nếu file không có trang nào match ───
+                # Bytes không cần nữa → trả lại RAM cho hệ thống.
+                # Các file CÓ match giữ bytes lại để layout priority sort + cắt ghép sub-doc.
+                if total_pages_matched == 0 and "bytes" in file_result:
+                    del file_result["bytes"]
+
             except Exception as exc:
                 for sol in all_sols:
                     errors.append({"sol": sol, "typeId": type_id, "error": str(exc)})
@@ -1270,6 +1289,9 @@ def run_auto_detect_all(
                     t0=t_file,
                     details=str(exc)
                 )
+                # Evict bytes even on error — file không dùng được
+                if "bytes" in file_result:
+                    del file_result["bytes"]
 
             completed_unique += 1
 
@@ -1360,118 +1382,14 @@ def run_auto_detect_all(
                     details=f"{sorted_count} SOLs evaluated for keywords/A4 geometry"
                 )
 
-    # ── Step 5: Extract matched pages into AUTO_DETECT_RAM_CACHE ─────────────
+    # -- Step 5: Slice matched pages into AUTO_DETECT_RAM_CACHE (Zero-network I/O) --
+    # Bytes da nam san trong RAM tu buoc quet (1A preload).
+    # Khong can doc mang lan nao nua -- chi cat ghep thuan CPU/RAM.
     t_ram = time.perf_counter()
-    _extract_to_ram(assembly, batched_files, pdf_type_ids, job_map=job_map)
-    cached_count = len(AUTO_DETECT_RAM_CACHE)
-    total_ram_kb = sum(len(b) for b in AUTO_DETECT_RAM_CACHE.values()) // 1024
-    tracer.record(
-        phase="4. RAM Extraction",
-        target="AUTO_DETECT_RAM_CACHE",
-        t0=t_ram,
-        details=f"{cached_count} sub-documents ({total_ram_kb} KB) serialized in RAM"
-    )
-
-    tracer.print_summary()
-    return {"assembly": assembly, "errors": errors}
-
-
-
-
-def _extract_to_ram(
-    assembly: dict,
-    batched_files: dict,
-    pdf_type_ids: list,
-    job_map: dict | None = None,
-) -> None:
-    """
-    After all detection tasks complete, extract matched pages per SOL x type_id
-    into AUTO_DETECT_RAM_CACHE as serialized fitz.Document bytes.
-
-    Key format: "{sol}_{type_id}"
-    Value: bytes of a fitz.Document containing only the matched pages.
-
-    Performance strategy: Selective Parallel Pre-fetch
-    ---------------------------------------------------
-    Phase 1  Traverse assembly to collect the unique set of source PDF files
-             that actually have matched pages. Only these are loaded, avoiding
-             wasted RAM and bandwidth for non-matched files in the folder.
-
-    Phase 2  Load those files concurrently via ThreadPoolExecutor.
-             Each worker reads the full binary stream and stores the bytes back
-             into the shared file_entry dict so subsequent SOLs sharing the
-             same physical file reuse the same in-memory buffer.
-
-    Phase 3  Slice-and-serialize purely from RAM (zero network I/O).
-             fitz.open(stream=bytes) + insert_pdf + tobytes are CPU-only.
-
-    Error handling: if a single file fails to load (network disconnect, lock),
-    the error is surfaced as a warning print; the slicing loop falls back to a
-    sequential open attempt, preserving all other SOLs.
-    """
     import pymupdf as fitz
-    from backend.file_resolver import parse_so
-    global AUTO_DETECT_RAM_CACHE
     AUTO_DETECT_RAM_CACHE.clear()
 
-    # ── Phase 1: Collect minimal set of unique files that need loading ─────────
-    # Maps absolute path -> file_entry dict (shared reference into batched_files)
-    needed_files: dict[str, dict] = {}
-
-    for sol, types_dict in assembly.items():
-        so = parse_so(sol)
-        for type_id in pdf_type_ids:
-            items = types_dict.get(type_id, [])
-            if not items:
-                continue
-
-            if type_id == "layout" and job_map and sol in job_map:
-                job_code = str(job_map[sol]).strip()
-                found_files = [
-                    f for f in batched_files.get("layout", {}).get(job_code, [])
-                    if f.get("found")
-                ]
-            else:
-                found_files = [
-                    f for f in batched_files.get(type_id, {}).get(so, [])
-                    if f.get("found")
-                ] if so else []
-
-            for e in items:
-                fidx = e.get("fileIdx", 0)
-                file_entry = found_files[fidx] if 0 <= fidx < len(found_files) else {}
-
-                # Skip entries already buffered in memory (e.g. Google Drive temp files)
-                if file_entry.get("bytes"):
-                    continue
-
-                pdf_path = file_entry.get("path") or e.get("filePath")
-                if not pdf_path or not isinstance(pdf_path, str):
-                    continue
-
-                # Deduplicate: one I/O call per physical file path
-                if pdf_path not in needed_files:
-                    needed_files[pdf_path] = file_entry
-
-    # ── Phase 2: Parallel binary load of all needed network / local files ──────
-    if needed_files:
-        def _load_one(item):
-            """Worker: read the file at pdf_path into file_entry["bytes"]."""
-            pdf_path, file_entry = item
-            try:
-                with open(pdf_path, "rb") as fp:
-                    file_entry["bytes"] = fp.read()
-            except Exception as load_exc:
-                print(f"[_extract_to_ram] parallel load failed: {pdf_path} — {load_exc}")
-
-        max_workers = min(16, max(4, (os.cpu_count() or 4) * 2))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-            list(pool.map(_load_one, needed_files.items()))
-
-    # ── Phase 3: In-RAM slice-and-serialize (zero network I/O) ────────────────
-    # Hoist opened_docs outside the loops so each physical source PDF is opened
-    # at most once across all SOLs and types.
-    opened_docs: dict[object, object] = {}
+    _opened: dict = {}
     try:
         for sol, types_dict in assembly.items():
             so = parse_so(sol)
@@ -1480,47 +1398,46 @@ def _extract_to_ram(
                 if not items:
                     continue
 
+                if type_id == "layout" and job_map and sol in job_map:
+                    job_code = str(job_map[sol]).strip()
+                    found_files = [
+                        f for f in batched_files.get("layout", {}).get(job_code, [])
+                        if f.get("found")
+                    ]
+                else:
+                    found_files = [
+                        f for f in batched_files.get(type_id, {}).get(so, [])
+                        if f.get("found")
+                    ] if so else []
+
                 ram_key = f"{sol}_{type_id}"
                 out_doc = fitz.open()
                 try:
-                    if type_id == "layout" and job_map and sol in job_map:
-                        job_code = str(job_map[sol]).strip()
-                        found_files = [
-                            f for f in batched_files.get("layout", {}).get(job_code, [])
-                            if f.get("found")
-                        ]
-                    else:
-                        found_files = [
-                            f for f in batched_files.get(type_id, {}).get(so, [])
-                            if f.get("found")
-                        ] if so else []
-
                     for e in items:
                         fidx = e.get("fileIdx", 0)
                         p    = e.get("pageIndex")
-
                         file_entry = found_files[fidx] if 0 <= fidx < len(found_files) else {}
-                        # Prioritize in-memory bytes (pre-loaded in Phase 2) over path
+
+                        # Priority: bytes in RAM (from 1A preload) > path fallback
                         pdf_source = file_entry.get("bytes") or file_entry.get("path") or e.get("filePath")
                         if not pdf_source:
                             continue
 
-                        # Stable cache key per file across all SOLs
                         file_key = file_entry.get("path") or e.get("filePath") or (type_id, so, fidx, file_entry.get("name"))
-                        if file_key not in opened_docs:
+                        if file_key not in _opened:
                             if isinstance(pdf_source, (bytes, bytearray)):
-                                opened_docs[file_key] = fitz.open(stream=pdf_source, filetype="pdf")
+                                _opened[file_key] = fitz.open(stream=pdf_source, filetype="pdf")
                             else:
-                                # Fallback: path was not pre-loaded (e.g. load error); sequential read
+                                # Fallback: preload failed -> sequential read from path
                                 try:
                                     with open(pdf_source, "rb") as fp:
                                         b = fp.read()
                                     file_entry["bytes"] = b
-                                    opened_docs[file_key] = fitz.open(stream=b, filetype="pdf")
+                                    _opened[file_key] = fitz.open(stream=b, filetype="pdf")
                                 except Exception:
-                                    opened_docs[file_key] = fitz.open(pdf_source)
+                                    _opened[file_key] = fitz.open(pdf_source)
 
-                        src_doc = opened_docs.get(file_key)
+                        src_doc = _opened.get(file_key)
                         if src_doc and p is not None:
                             page_idx = p - 1  # convert 1-based to 0-based
                             if 0 <= page_idx < src_doc.page_count:
@@ -1529,13 +1446,37 @@ def _extract_to_ram(
                     if out_doc.page_count > 0:
                         # Fast serialization: deflate=False, garbage=0 avoids CPU compression overhead
                         AUTO_DETECT_RAM_CACHE[ram_key] = out_doc.tobytes(deflate=False, garbage=0)
+
                 except Exception as exc:
-                    print(f"[_extract_to_ram] {sol}/{type_id}: {exc}")
+                    print(f"[ram_slice] {sol}/{type_id}: {exc}")
                 finally:
                     out_doc.close()
+
+                # -- Late Eviction: xoa bytes file goc sau khi sub-doc da duoc tao ------
+                # Sub-doc RAM da du cho Export -- bytes file goc khong can nua.
+                for ev_e in items:
+                    ev_fidx = ev_e.get("fileIdx", 0)
+                    if 0 <= ev_fidx < len(found_files):
+                        ev_fe = found_files[ev_fidx]
+                        if "bytes" in ev_fe:
+                            del ev_fe["bytes"]
+
     finally:
-        for d in opened_docs.values():
+        for d in _opened.values():
             try:
                 d.close()
             except Exception:
                 pass
+
+    cached_count = len(AUTO_DETECT_RAM_CACHE)
+    total_ram_kb = sum(len(b) for b in AUTO_DETECT_RAM_CACHE.values()) // 1024
+    tracer.record(
+        phase="4. RAM Slice",
+        target="AUTO_DETECT_RAM_CACHE",
+        t0=t_ram,
+        details=f"{cached_count} sub-documents ({total_ram_kb} KB) -- zero network I/O"
+    )
+
+    tracer.print_summary()
+    return {"assembly": assembly, "errors": errors}
+

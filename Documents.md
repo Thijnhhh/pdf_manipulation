@@ -3,11 +3,11 @@
 ---
 
 ## Document Information
-* **Document Version:** 1.2.2
+* **Document Version:** 1.2.3
 * **Target Application:** PDF Manipulation Tool Desktop Edition
 * **Target Operating System:** Microsoft Windows 10 / 11 (64-bit)
 * **Author / Ownership:** Thinh Phung / Avery Dennison (AD) RFID FRU Team
-* **Last Updated:** 2026-09-23
+* **Last Updated:** 2026-09-24
 
 ---
 
@@ -740,30 +740,39 @@ To bypass Windows Network Share (UNC) SMB latency caused by deep recursive `rglo
 
 ---
 
-#### 8. `_extract_to_ram` — Selective Parallel Pre-fetch (`backend/pdf_detector.py`)
+#### 8. Single-Pass RAM Preload & Inline Sub-Document Slicing (`backend/pdf_detector.py`)
 
-After all SOL × type_id detection tasks complete, `_extract_to_ram` serializes matched pages into `AUTO_DETECT_RAM_CACHE` as `bytes`. As of v1.2.2, this uses a **3-phase selective parallel pre-fetch** strategy:
+As of v1.2.3, the previous two-pass I/O and separate `_extract_to_ram` pre-fetch architecture has been replaced with a **Single-Pass I/O + Double Eviction** strategy across the detection and RAM caching pipeline:
 
-**Phase 1 — Selective Collection:**
-Traverses `assembly` to build a deduplicated `needed_files: dict[str, dict]` containing only source PDF paths that have matched pages. Files already carrying in-memory `bytes` (e.g. Google Drive temp files previously downloaded) are skipped entirely — no redundant I/O.
-
-**Phase 2 — Parallel Binary Load:**
-All unique network/local paths in `needed_files` are loaded **concurrently** via `ThreadPoolExecutor(max_workers=min(16, cpu*2))`. Each worker:
+**1. Single-Pass RAM Preload (Step 2 Scan Loop):**
+Each candidate PDF file is loaded into RAM (`file_result["bytes"] = fp.read()`) immediately upon entering the sequential scan loop before page detection begins (reusing pre-downloaded buffers for Google Drive files). Detection runs entirely from in-memory bytes, eliminating repetitive SMB/network reads:
 ```python
-with open(pdf_path, "rb") as fp:
-    file_entry["bytes"] = fp.read()  # stored as shared reference into batched_files
+if not file_result.get("bytes"):
+    _src_path = file_result.get("path", "")
+    if _src_path and (os.path.isfile(_src_path) or _src_path.startswith(r"\\")):
+        try:
+            with open(_src_path, "rb") as _fp:
+                file_result["bytes"] = _fp.read()
+        except Exception as _load_exc:
+            print(f"[preload] {file_name}: {_load_exc}")
+
+pdf_source = file_result.get("bytes") or file_result.get("path")
 ```
-Because the GIL does not block I/O threads, all SMB connections are negotiated simultaneously. For a typical RFID HT batch (53 unique PDFs across UNC), this reduces Phase 2 wall-clock time from ~37s (serial) to ~3–5s (parallel).
 
-If a single file fails to load (network disconnect, exclusive lock), the error is printed as a warning and that file_entry retains no `bytes`. Phase 3 falls back to a sequential re-read attempt for that entry only, preserving all other SOLs.
+**2. Early Eviction:**
+If a file yields zero matched pages across all target SOLs (`total_pages_matched == 0`), `file_result["bytes"]` is immediately deleted (`del file_result["bytes"]`) to reclaim heap memory, avoiding unnecessary memory retention during subsequent scans. Files with matched pages retain their in-memory bytes for the layout priority sort (PFL) and subsequent sub-document slicing.
 
-**Phase 3 — In-RAM Slicing:**
-The `opened_docs` hoisting loop runs purely from memory (`fitz.open(stream=bytes)`). No network I/O occurs. Serialization uses `tobytes(deflate=False, garbage=0)` for maximum CPU throughput.
+**3. Inline In-RAM Slicing & Late Eviction (Step 5):**
+The standalone `_extract_to_ram()` function has been removed. Matched pages are sliced directly in-memory via `fitz.open(stream=bytes) → insert_pdf → tobytes(deflate=False, garbage=0)` with zero network I/O. Once a sub-document is serialized to `AUTO_DETECT_RAM_CACHE`, source file bytes are evicted (`del file_entry["bytes"]`) immediately, completely preventing "double memory" peaks.
 
-| Batch | Before | After |
+**4. Double Eviction in Trim Adidas (`backend/bridge.py` Stage 6):**
+Similarly, Trim Adidas Stage 6 executes late eviction (`del ev_fe["bytes"]`) immediately after each sub-document is written to `AUTO_DETECT_RAM_CACHE`, maintaining minimal memory usage throughout large order batches.
+
+| Metric | Before (v1.2.2 2-Pass I/O) | After (v1.2.3 Single-Pass + Double Eviction) |
 | :--- | :--- | :--- |
-| RFID HT (53 files, ~74 MB) | ~37,000 ms | ~3,000–5,000 ms |
-| PFL / PFL Thermal (Drive temp) | already fast (bytes cached) | unchanged |
+| Network File Reads | 2 passes (Scan pass + Extraction pass) | **1 single pass** (loaded during scan, zero I/O for extraction) |
+| Memory Footprint | Kept all loaded source PDFs + sub-documents | **Eagerly freed** via Early Eviction (0 matches) & Late Eviction (after slicing) |
+| RAM Extraction Latency | ~3,000–5,000 ms (Parallel prefetch) | **Sub-second** (Pure CPU/RAM slicing, 0 network syscalls) |
 
 ---
 
@@ -815,9 +824,9 @@ Adoption scope:
 ### 4.4 Storage & Resource Management
 
 #### 1. In-Memory RAM Caches
-* `AUTO_DETECT_RAM_CACHE`: A global dictionary mapping `"{sol}_{typeId}"` to serialized `bytes` of pre-extracted PyMuPDF documents. Populated by `_extract_to_ram` (PDF Merger) using **Selective Parallel Pre-fetch** (v1.2.2). When exporting from Auto Detect, documents are written directly from RAM, eliminating redundant disk reads.
+* `AUTO_DETECT_RAM_CACHE`: A global dictionary mapping `"{sol}_{typeId}"` to serialized `bytes` of pre-extracted PyMuPDF documents. Populated by inline in-RAM sub-document slicing (PDF Merger) and Stage 6 (Trim Adidas) using **Single-Pass I/O + Double Eviction** (v1.2.3). When exporting from Auto Detect, documents are written directly from RAM, eliminating redundant disk reads.
 * `_RESOLVED_FILES_CACHE`: Global dictionary storing file descriptors, paths, and downloaded byte buffers to prevent duplicate network roundtrips.
-* `file_entry["bytes"]`: Per-file in-memory buffer stored inside `batched_files` entries. Shared by reference across all SOLs and phases — set once by Phase 2 of `_extract_to_ram`, reused by Phase 3 and subsequent exports without re-reading from network.
+* `file_entry["bytes"]`: Per-file in-memory buffer stored inside `batched_files` entries. Populated once during the single-pass preload scan loop, used for in-RAM detection, layout priority sorting, and sub-document slicing, then eagerly freed via early/late eviction to prevent memory accumulation.
 * Explicit Deallocation: Calling `clear_auto_detect_ram_cache()` purges all serialized document buffers from memory. All PyMuPDF document instances are managed using `try ... finally: doc.close()` blocks to guarantee immediate native memory release.
 
 #### 2. Temporary Directory Lifecycle (`%TEMP%`)

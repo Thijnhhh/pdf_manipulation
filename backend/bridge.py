@@ -58,7 +58,7 @@ from backend.sheets_service import get_all_initial_data
 
 # ── Bridge Tracing ───────────────────────────────────────────
 # Set to False to silence all trace output after manual testing.
-TRACING_ENABLED = False
+TRACING_ENABLED = True
 
 _MAX_ARG_LEN = 40  # max chars per argument value in trace output
 
@@ -1202,6 +1202,16 @@ class BridgeApi:
 
                                 if out_doc.page_count > 0:
                                     AUTO_DETECT_RAM_CACHE[ram_key] = out_doc.tobytes(deflate=False, garbage=0)
+
+                                # -- Late Eviction: xoa bytes file goc sau khi sub-doc da duoc tao ----
+                                # Sub-doc da nam trong AUTO_DETECT_RAM_CACHE -- bytes goc khong can nua.
+                                for ev_e in items:
+                                    ev_fidx = ev_e.get("fileIdx", 0)
+                                    if 0 <= ev_fidx < len(found_files_for_so):
+                                        ev_fe = found_files_for_so[ev_fidx]
+                                        if "bytes" in ev_fe:
+                                            del ev_fe["bytes"]
+
                             except Exception as exc:
                                 print(f"[run_auto_detect_trim] RAM extract {sol}/{type_id}: {exc}")
                             finally:

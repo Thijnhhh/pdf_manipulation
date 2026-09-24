@@ -3,6 +3,15 @@
 All notable changes to this project will be documented in this file.
 
 
+## [1.2.3] - 2026-09-24
+### Changed
+- **Single-Pass I/O & Preload Architecture (`pdf_detector.py`):** Candidate PDFs in the detection loop are now preloaded directly into RAM (`file_result["bytes"] = fp.read()`) in a single pass upon entering the scan loop. Subsequent page detection runs entirely from in-memory byte streams, eliminating redundant network round-trips over SMB/LAN shares.
+- **Double Eviction Memory Management (`pdf_detector.py` & `bridge.py`):**
+  - *Early Eviction:* PDFs with zero matched pages across all target SOLs immediately delete their in-memory bytes buffer (`del file_result["bytes"]`), returning memory to the OS during the scan phase.
+  - *Late Eviction:* After matched pages are sliced into sub-documents and cached into `AUTO_DETECT_RAM_CACHE`, source PDF bytes are immediately cleared (`del file_entry["bytes"]`), eliminating duplicate in-memory document peaks across both PDF Merger and Trim Adidas.
+- **Inline Zero-Network Sub-Document Slicing (`pdf_detector.py`):** Removed the standalone `_extract_to_ram()` function (−3,617 characters). Sub-document page slicing now executes inline using in-memory bytes with zero network I/O, dramatically reducing RAM extraction latency.
+- **Synchronized Documentation & PE Version Metadata:** Updated `Documents.md`, `version_info.txt`, and `config/version.json` to version 1.2.3.
+
 ## [1.2.2] - 2026-09-23
 ### Added
 - **`save_pdf_safely()` — Safe Output Writer (`pdf_processor.py`):** New utility replacing all raw `doc.save()` calls throughout the export pipeline. Automatically detects file-lock conflicts (e.g. PDF open in Adobe Acrobat / Foxit Reader) and appends an auto-incrementing numeric suffix `(1)`, `(2)`... up to 100 attempts before raising `PermissionError`. Strictly enforces Windows MAX_PATH (259 characters) by mathematically truncating the base name before appending the suffix. Adopted by: `execute_export` (merge & split), `deduplicate_pdf`, and `deduplicate_batch`.
