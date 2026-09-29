@@ -883,18 +883,20 @@ class _AutoDetectTracer:
         self.prefix = prefix
         self.t_start = time.perf_counter()
         self.records: list[dict] = []
+        self._lock = threading.Lock()
 
     def record(self, phase: str, target: str, t0: float, details: str = "") -> float:
         duration_ms = (time.perf_counter() - t0) * 1000
         if self.enabled:
-            self.records.append({
-                "phase": phase,
-                "target": target,
-                "ms": duration_ms,
-                "details": details,
-            })
-            detail_str = f" ({details})" if details else ""
-            print(f"[{self.prefix}] >> {phase:<22} | {target:<32} | {duration_ms:>8.1f}ms{detail_str}", flush=True)
+            with self._lock:
+                self.records.append({
+                    "phase": phase,
+                    "target": target,
+                    "ms": duration_ms,
+                    "details": details,
+                })
+                detail_str = f" ({details})" if details else ""
+                print(f"[{self.prefix}] >> {phase:<22} | {target:<32} | {duration_ms:>8.1f}ms{detail_str}", flush=True)
         return duration_ms
 
     def print_summary(self) -> None:
@@ -944,6 +946,100 @@ class _AutoDetectTracer:
 AutoDetectTracer = _AutoDetectTracer
 
 
+# ── Helper: Boundary Match PDF Finder for RFID SB Layout ─────────────────────
+
+def _find_pdfs_by_sol_boundary(folder_path: str, sol_list: list, is_drive: bool) -> dict:
+    """
+    Find PDF files by SOL with boundary check.
+    RFID SB filename pattern: '{SOL}_{...rest}.pdf' — SOL is terminated by '_'.
+    Prevents false match: '144187563-1' matching '144187563-10_...pdf'.
+    Normalizes excessive spaces in filenames before matching.
+
+    Returns: { sol: [{found, path, name, file_id}] }
+    Keys are full SOL strings (e.g. '144187563-1'), NOT 9-digit SO.
+    """
+    import os, threading, queue as _queue
+
+    clean_sols = list(dict.fromkeys(s.strip() for s in sol_list if s and s.strip()))
+    results = {sol: [] for sol in clean_sols}
+
+    if is_drive:
+        from backend.file_resolver import find_all_pdfs_batch
+        return find_all_pdfs_batch(folder_path, clean_sols, is_drive=True)
+
+    if not os.path.isdir(folder_path):
+        return results
+
+    results_lock = threading.Lock()
+    lower_sol_map = {sol.lower(): sol for sol in clean_sols}
+
+    dirs_q: _queue.Queue = _queue.Queue()
+    dirs_q.put(folder_path)
+    active_count = 0
+    count_lock = threading.Lock()
+    done_evt = threading.Event()
+
+    def worker():
+        nonlocal active_count
+        while not done_evt.is_set():
+            try:
+                curr_dir = dirs_q.get(timeout=0.04)
+            except _queue.Empty:
+                with count_lock:
+                    if active_count == 0 and dirs_q.empty():
+                        done_evt.set()
+                return
+            with count_lock:
+                active_count += 1
+            try:
+                subdirs = []
+                with os.scandir(curr_dir) as it:
+                    for entry in it:
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                subdirs.append(entry.path)
+                            elif (entry.is_file(follow_symlinks=False)
+                                  and entry.name.lower().endswith(".pdf")):
+                                fname = entry.name
+                                # Chuẩn hóa khoảng trắng thừa
+                                fname_norm = " ".join(fname.lower().split())
+                                for sol_l, orig_sol in lower_sol_map.items():
+                                    idx = fname_norm.find(sol_l)
+                                    if idx == -1:
+                                        continue
+                                    end = idx + len(sol_l)
+                                    # Chặn biên: ký tự tiếp theo phải là '_', '.', khoảng trắng hoặc hết chuỗi
+                                    if end < len(fname_norm) and fname_norm[end] not in ('_', '.', ' '):
+                                        continue
+                                    fpath = entry.path
+                                    item = {"found": True, "file_id": fpath,
+                                            "path": fpath, "name": fname}
+                                    with results_lock:
+                                        results[orig_sol].append(item)
+                        except OSError:
+                            pass
+                for sd in subdirs:
+                    dirs_q.put(sd)
+            except OSError:
+                pass
+            finally:
+                dirs_q.task_done()
+                with count_lock:
+                    active_count -= 1
+                    if active_count == 0 and dirs_q.empty():
+                        done_evt.set()
+
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(32)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    for sol in results:
+        results[sol].sort(key=lambda x: x.get("name", "").lower())
+    return results
+
+
 # ── Top-level runner ──────────────────────────────────────────────────────────
 
 def run_auto_detect_all(
@@ -958,47 +1054,22 @@ def run_auto_detect_all(
     sol_flags: dict = None,
     job_map: dict = None,
     trace_enabled: bool = False,
+    line: str = "PFL",
 ):
     """
     Main entry point called from bridge.py in a background thread.
-
-    Unique File Loop strategy (replaces SO-based loop):
-      1. Group SOLs by 9-digit SO base (parse_so).
-         Invalid SOLs are silently skipped.
-      2. Batch-search all PDFs for all unique SOs across all type_ids.
-      3. For SOview: build a Unique File table — each physical file is processed
-         exactly ONCE regardless of how many SOs point to it.  Within that single
-         pass, _detect_barcode_soview uses sol_flags to dispatch per-SOL mode:
-           • Flag = False → Fast Mode (default) or OCR Mode (if ocr_flag=True)
-           • Flag = True  → Barcode Range Scan
-      4. For layout: all pages of matching files are recorded directly (no barcode
-         scan needed); files are matched by job_code when job_map is provided
-         (RFID HT), otherwise by SO as usual (PFL).
-      5. Accumulate per-SOL page results with set-union (duplicates avoided).
-
-    Args:
-        sol_list:    Flat list of SOL strings to process.
-        folder_inputs: { type_id: folder_path_or_id } e.g. {"soview": ..., "layout": ...}
-        is_drive_map:  { type_id: bool } True when the folder is a Google Drive ID.
-        config:      { type_id: priority_chain_list } e.g. {"soview": ["barcode"]}
-        exceptions:  Per-SOL exception overrides (currently unused).
-        cancel_event: threading.Event — set to abort mid-run.
-        progress_cb: Optional callable({sol, typeId, method, fileName, ...}).
-        ocr_flag:    If True, OCR Mode is used for Flag=False SOLs in SOview.
-        sol_flags:   { sol: bool } — from validate_so_flags(); None → all False (PFL).
-        job_map:     { sol: job_code } — for RFID HT layout matching; None → PFL mode.
-        trace_enabled: If True, detailed performance tracing is printed to stdout.
-
-    Returns:
-        {
-            "assembly": { sol: { typeId: [{pageIndex, fileIdx, fileName, method}] } },
-            "errors":   [ { sol, typeId, error } ]
-        }
     """
     from backend.file_resolver import parse_so, find_all_pdfs_batch
+    from backend.pdf_deduplicator import detect_unique_pages_dedup
+    from backend.pdf_processor import is_network_path, read_pdf_bytes_smart
     import pymupdf as fitz
 
-    tracer = _AutoDetectTracer(enabled=trace_enabled)
+    tracer_title = (
+        f"Auto Detect Performance Breakdown (RFID SB UQ - {len(sol_list)} SOLs)"
+        if line == "RFID SB"
+        else "Auto Detect Performance Breakdown"
+    )
+    tracer = _AutoDetectTracer(enabled=trace_enabled, title=tracer_title, prefix="DETECTOR")
 
     if sol_flags is None:
         sol_flags = {}
@@ -1058,6 +1129,14 @@ def run_auto_detect_all(
                     match_prefix_8=True
                 )
                 search_desc = f"{len(unique_jobs)} unique Jobs"
+            elif type_id == "layout" and line == "RFID SB":
+                # RFID SB: layout files searched by full SOL with boundary check
+                batched_files[type_id] = _find_pdfs_by_sol_boundary(
+                    folder_inputs[type_id],
+                    clean_sol_list,
+                    is_drive_map.get(type_id, False)
+                )
+                search_desc = f"{len(clean_sol_list)} SOLs (boundary match)"
             else:
                 batched_files[type_id] = find_all_pdfs_batch(
                     folder_inputs[type_id],
@@ -1068,9 +1147,10 @@ def run_auto_detect_all(
 
             found_cnt = sum(len([f for f in flist if f.get("found")]) for flist in batched_files[type_id].values())
             loc_label = "Drive" if is_drive_map.get(type_id, False) else "UNC/Local"
+            target_label = "layout (RFID SB Boundary)" if (type_id == "layout" and line == "RFID SB") else f"{type_id} ({loc_label})"
             tracer.record(
                 phase="1. Batch Search",
-                target=f"{type_id} ({loc_label})",
+                target=target_label,
                 t0=t_search,
                 details=f"{search_desc}, {found_cnt} files found"
             )
@@ -1148,6 +1228,122 @@ def run_auto_detect_all(
                     )
             continue
 
+        # ── Case C [NEW]: RFID SB Layout — Cluster-Jump Dedup per SOL ────────
+        elif type_id == "layout" and line == "RFID SB":
+            layout_files_all = batched_files.get("layout", {})
+
+            # ── Stage 2: Parallel Small-First Preload + In-Flight Dedup Pipeline ──
+            # Thu thập tất cả các file mạng duy nhất trên toàn bộ SOL cần preload
+            unique_net_files: dict[str, dict] = {}
+            for sol in clean_sol_list:
+                for f in layout_files_all.get(sol, []):
+                    fpath = f.get("path")
+                    if f.get("found") and fpath and not f.get("bytes") and is_network_path(fpath):
+                        if fpath not in unique_net_files:
+                            unique_net_files[fpath] = f
+
+            if unique_net_files and not cancel_event.is_set():
+                t_pipeline_start = time.perf_counter()
+
+                # Sắp xếp ưu tiên file nhỏ trước (Small-Files First) để thoát nhanh các file nhỏ
+                sorted_net_files = sorted(
+                    unique_net_files.values(),
+                    key=lambda fe: os.path.getsize(fe.get("path", "")) if os.path.isfile(fe.get("path", "")) else 0
+                )
+                max_workers = min(2, len(sorted_net_files))
+
+                def _pipeline_worker(f_entry: dict):
+                    if cancel_event.is_set():
+                        return
+                    f_path = f_entry.get("path", "")
+                    f_name = f_entry.get("name", "")
+                    t0 = time.perf_counter()
+                    try:
+                        b = read_pdf_bytes_smart(f_path)
+                        f_entry["bytes"] = b
+                        bytes_len = len(b)
+                        dt_load = max(time.perf_counter() - t0, 1e-6)
+                        throughput_mbs = (bytes_len / (1024 * 1024)) / dt_load
+
+                        # ── PIPELINE: Dedup ngay lập tức trong RAM khi bytes vừa về ──
+                        t_dedup = time.perf_counter()
+                        unique_pages = detect_unique_pages_dedup(b)
+                        f_entry["unique_pages"] = unique_pages
+                        dt_dedup_ms = (time.perf_counter() - t_dedup) * 1000
+
+                        if tracer.enabled:
+                            print(
+                                f"[{tracer.prefix}] >> 2. Layout Pipeline   | {f_name[:32]:<32} | "
+                                f"{dt_load*1000:>8.1f}ms load ({throughput_mbs:.1f} MB/s) + "
+                                f"{dt_dedup_ms:>6.1f}ms dedup ({len(unique_pages)} pgs)",
+                                flush=True
+                            )
+                    except Exception as _load_exc:
+                        print(f"[pipeline RFID SB layout] {f_name}: {_load_exc}")
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(_pipeline_worker, fe) for fe in sorted_net_files]
+                    concurrent.futures.wait(futures)
+
+                dt_pipeline_ms = (time.perf_counter() - t_pipeline_start) * 1000
+                total_layout_kb = sum(len(fe.get("bytes", b"")) for fe in sorted_net_files) // 1024
+                throughput_total = (total_layout_kb / 1024) / max((dt_pipeline_ms / 1000), 1e-6)
+
+                tracer.record(
+                    phase="2. Layout Pipeline",
+                    target=f"{len(sorted_net_files)} files ({total_layout_kb // 1024} MB)",
+                    t0=t_pipeline_start,
+                    details=f"Parallel Small-First (4 workers) @ {throughput_total:.1f} MB/s [Load + Dedup]"
+                )
+
+            # ── Map kết quả vào assembly ──────────────────────────────────────
+            for sol in clean_sol_list:
+                if cancel_event.is_set():
+                    break
+
+                found_for_sol = [f for f in layout_files_all.get(sol, []) if f.get("found")]
+
+                for file_idx, file_result in enumerate(found_for_sol):
+                    file_name = file_result.get("name", "")
+                    _src_path = file_result.get("path", "")
+
+                    unique_pages = file_result.get("unique_pages")
+                    if unique_pages is None:
+                        # Fallback nếu file local hoặc pipeline chưa kịp chạy
+                        pdf_source = file_result.get("bytes") or _src_path
+                        if pdf_source:
+                            try:
+                                unique_pages = detect_unique_pages_dedup(pdf_source)
+                                file_result["unique_pages"] = unique_pages
+                            except Exception as exc:
+                                errors.append({"sol": sol, "typeId": "layout", "error": str(exc)})
+                                continue
+                        else:
+                            continue
+
+                    file_path = file_result.get("path") or ""
+                    file_id = file_result.get("file_id") or file_path or file_name
+                    seen = set((e["fileIdx"], e["pageIndex"]) for e in assembly[sol]["layout"])
+
+                    for p in unique_pages:
+                        if (file_idx, p) not in seen:
+                            assembly[sol]["layout"].append({
+                                "pageIndex": p,
+                                "fileIdx": file_idx,
+                                "fileName": file_name,
+                                "filePath": file_path,
+                                "fileId": file_id,
+                                "method": "layout_dedup",
+                            })
+                            seen.add((file_idx, p))
+                    assembly[sol]["layout"].sort(key=lambda e: (e["fileIdx"], e["pageIndex"]))
+
+                    # 1B: Early Eviction nếu 0 trang nào được giữ lại
+                    if len(unique_pages) == 0 and "bytes" in file_result:
+                        del file_result["bytes"]
+
+            continue  # Thoát type_id, bỏ qua block sort priority không liên quan bên dưới
+
         # ── Case B: Standard Priority-Chained Detection (SOview, PFL Layout) ──
         # Priority chain is resolved directly from frontend config (config[type_id]).
         raw_chain = config.get(type_id)
@@ -1186,6 +1382,49 @@ def run_auto_detect_all(
         total_unique = len(unique_files)
         completed_unique = 0
 
+        # ── 1A: Parallel RAM Preload for Network Files in Case B (SOview) ───
+        net_soviews = [
+            uf["file_result"] for uf in unique_files.values()
+            if not uf["file_result"].get("bytes") and uf["file_result"].get("path") and is_network_path(uf["file_result"].get("path"))
+        ]
+        if net_soviews and not cancel_event.is_set():
+            t_preload_so = time.perf_counter()
+            sorted_soviews = sorted(
+                net_soviews,
+                key=lambda fe: os.path.getsize(fe.get("path", "")) if os.path.isfile(fe.get("path", "")) else 0
+            )
+            so_workers = min(4, len(sorted_soviews))
+
+            def _preload_so_worker(fe: dict):
+                if cancel_event.is_set():
+                    return
+                fpath = fe.get("path", "")
+                fname = fe.get("name", "")
+                t0 = time.perf_counter()
+                try:
+                    b = read_pdf_bytes_smart(fpath)
+                    fe["bytes"] = b
+                    dt_s = max(time.perf_counter() - t0, 1e-6)
+                    mb = len(b) / (1024 * 1024)
+                    if tracer.enabled:
+                        print(f"[{tracer.prefix}] >> 2A. Preload {type_id:<9} | {fname[:32]:<32} | {dt_s*1000:>8.1f}ms ({mb*1024:.1f} KB @ {mb/dt_s:.1f} MB/s)", flush=True)
+                except Exception as _err:
+                    print(f"[preload {type_id}] {fname}: {_err}")
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=so_workers) as executor:
+                futures = [executor.submit(_preload_so_worker, fe) for fe in sorted_soviews]
+                concurrent.futures.wait(futures)
+
+            dt_so_preload = (time.perf_counter() - t_preload_so) * 1000
+            total_so_kb = sum(len(fe.get("bytes", b"")) for fe in sorted_soviews) // 1024
+            throughput_so = (total_so_kb / 1024) / max((dt_so_preload / 1000), 1e-6)
+            tracer.record(
+                phase=f"2A. Preload {type_id}",
+                target=f"{len(sorted_soviews)} files ({total_so_kb} KB)",
+                t0=t_preload_so,
+                details=f"Parallel Small-First (4 workers) @ {throughput_so:.1f} MB/s"
+            )
+
         for file_key, uf in unique_files.items():
             if cancel_event.is_set():
                 break
@@ -1194,15 +1433,12 @@ def run_auto_detect_all(
             file_name   = file_result.get("name", "")
             all_sols    = uf["sols"]
 
-            # ── 1A: Single-pass RAM preload ──────────────────────────────────────────────
-            # Nạp toàn bộ file vào RAM ngay tại đây (1 lần duy nhất qua mạng).
-            # Nếu bytes đã có sẵn (Drive file đã download trước), dùng luôn.
+            # Fallback nếu preload bị sót hoặc file local
             if not file_result.get("bytes"):
                 _src_path = file_result.get("path", "")
                 if _src_path and (os.path.isfile(_src_path) or _src_path.startswith(r"\\\\")):
                     try:
-                        with open(_src_path, "rb") as _fp:
-                            file_result["bytes"] = _fp.read()
+                        file_result["bytes"] = read_pdf_bytes_smart(_src_path)
                     except Exception as _load_exc:
                         print(f"[preload] {file_name}: {_load_exc}")
 
@@ -1404,6 +1640,11 @@ def run_auto_detect_all(
                         f for f in batched_files.get("layout", {}).get(job_code, [])
                         if f.get("found")
                     ]
+                elif type_id == "layout" and line == "RFID SB":
+                    found_files = [
+                        f for f in batched_files.get("layout", {}).get(sol, [])
+                        if f.get("found")
+                    ]
                 else:
                     found_files = [
                         f for f in batched_files.get(type_id, {}).get(so, [])
@@ -1428,13 +1669,14 @@ def run_auto_detect_all(
                             if isinstance(pdf_source, (bytes, bytearray)):
                                 _opened[file_key] = fitz.open(stream=pdf_source, filetype="pdf")
                             else:
-                                # Fallback: preload failed -> sequential read from path
-                                try:
-                                    with open(pdf_source, "rb") as fp:
-                                        b = fp.read()
-                                    file_entry["bytes"] = b
-                                    _opened[file_key] = fitz.open(stream=b, filetype="pdf")
-                                except Exception:
+                                if is_network_path(pdf_source):
+                                    try:
+                                        b = read_pdf_bytes_smart(pdf_source)
+                                        file_entry["bytes"] = b
+                                        _opened[file_key] = fitz.open(stream=b, filetype="pdf")
+                                    except Exception:
+                                        _opened[file_key] = fitz.open(pdf_source)
+                                else:
                                     _opened[file_key] = fitz.open(pdf_source)
 
                         src_doc = _opened.get(file_key)

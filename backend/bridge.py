@@ -47,6 +47,7 @@ from backend.pdf_detector import (
     validate_so_flags,
 )
 from backend.pdf_processor import (
+    _page_to_temp_img,
     execute_export,
     get_page_hires,
     get_page_range_thumbnails,
@@ -444,6 +445,55 @@ class BridgeApi:
 
         _run_in_thread(_task)
 
+    # ── 3b. Zero-Network Instant Auto Detect Preview ─────────
+
+    @_trace
+    def fetch_auto_detect_preview(
+        self,
+        sol_code:          str,
+        sol_assembly_json: str,
+        dpi:               int = 96,
+    ) -> None:
+        """
+        Async: instant thumbnail rendering directly from AUTO_DETECT_RAM_CACHE in RAM
+        with ZERO network I/O.
+        Pushes: window._onAutoDetectPreviewReady(sol, cardsMap)
+        """
+        def _task():
+            cards_map: dict[str, str] = {}
+            try:
+                assembly_types: dict[str, list[dict]] = json.loads(sol_assembly_json) if sol_assembly_json else {}
+
+                for type_id, entries in assembly_types.items():
+                    ram_key = f"{sol_code}_{type_id}"
+                    cached_bytes = AUTO_DETECT_RAM_CACHE.get(ram_key)
+
+                    if cached_bytes:
+                        try:
+                            doc = fitz.open(stream=cached_bytes, filetype="pdf")
+                            try:
+                                for seq_idx, entry in enumerate(entries):
+                                    file_idx = entry.get("fileIdx", 0)
+                                    orig_page_num = entry.get("pageIndex", 1)
+                                    card_id = f"ad-preview-card-{type_id}-{file_idx}-{orig_page_num}"
+
+                                    if 0 <= seq_idx < len(doc):
+                                        page = doc[seq_idx]
+                                        img_url = _page_to_temp_img(page, dpi=dpi, fmt="jpeg", quality=80)
+                                        cards_map[card_id] = img_url
+                            finally:
+                                doc.close()
+                        except Exception as e_render:
+                            print(f"[fetch_auto_detect_preview] Render error for {ram_key}: {e_render}")
+            except Exception as exc:
+                print(f"[fetch_auto_detect_preview] Error: {exc}")
+
+            payload = _json_str(cards_map)
+            sol_esc = _js_str(sol_code)
+            self._eval(f"window._onAutoDetectPreviewReady({sol_esc}, {payload})")
+
+        _run_in_thread(_task)
+
     @_trace
     def get_page_hires_by_path(
         self,
@@ -702,6 +752,7 @@ class BridgeApi:
         ocr_flag:           bool = False,
         flags_json:         str = "{}",
         job_map_json:       str = "{}",
+        line_str:           str = "PFL",
     ) -> None:
         """
         Async: runs the Auto Detect engine for all SOLs and PDF types.
@@ -713,6 +764,7 @@ class BridgeApi:
             job_map_json: JSON string of { sol: job_code } (RFID HT only).
                           Used for layout file matching by job code.
                           Omit or pass "{}" for PFL.
+            line_str:     Line identifier (e.g. "PFL", "RFID SB"). Default "PFL".
 
         Pushes to JS:
           window._onAutoDetectProgress({ sol, typeId, method, page, totalPages })
@@ -760,6 +812,7 @@ class BridgeApi:
                     sol_flags     = sol_flags,
                     job_map       = job_map,
                     trace_enabled = TRACING_ENABLED,
+                    line          = line_str,
                 )
 
                 if self._auto_detect_cancel.is_set():

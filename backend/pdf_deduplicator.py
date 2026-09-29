@@ -43,7 +43,7 @@ import re
 import ctypes
 from typing import Callable, Optional
 
-from backend.pdf_processor import save_pdf_safely
+from backend.pdf_processor import save_pdf_safely, is_network_path, open_pdf_smart
 
 import pymupdf as fitz
 from PIL import Image
@@ -64,23 +64,7 @@ LogCb = Callable[[int, int, Optional[str], str], None]
 _ID_PATTERN = re.compile(r'(?<!\d)(?<!\d )(?:\d{13}|\d(?: \d){12})(?! ?\d)')
 
 # ── Network path detection ───────────────────────────────────
-
-def _is_network_path(path: str) -> bool:
-    """
-    Detect whether *path* resolves to a network location on Windows.
-    Handles both:
-      - UNC paths    : \\\\server\\share\\... (starts with \\\\)
-      - Mapped drives: Z:\\...  (GetDriveTypeW returns DRIVE_REMOTE = 4)
-    """
-    norm = os.path.normpath(path)
-    if norm.startswith('\\\\'):
-        return True
-    drive, _ = os.path.splitdrive(norm)
-    if drive:
-        DRIVE_REMOTE = 4
-        drive_type = ctypes.windll.kernel32.GetDriveTypeW(drive + '\\')
-        return drive_type == DRIVE_REMOTE
-    return False
+_is_network_path = is_network_path
 
 
 # ── Text extraction helpers (fast path) ─────────────────────
@@ -320,12 +304,7 @@ def deduplicate_pdf(
     # the whole file sequentially once and opening from a memory stream
     # eliminates that latency entirely.
     try:
-        if _is_network_path(pdf_path):
-            with open(pdf_path, "rb") as _f:
-                _pdf_bytes = _f.read()   # one sequential network read
-            doc = fitz.open(stream=_pdf_bytes, filetype="pdf")
-        else:
-            doc = fitz.open(pdf_path)    # local disk: direct open is fine
+        doc = open_pdf_smart(pdf_path)
     except Exception as exc:
         return {
             "success": False,
@@ -503,3 +482,57 @@ def deduplicate_batch(
             results.append(result)
 
     return results
+
+
+# ── Public Detection API (Cluster-Jump) ─────────────────────
+
+def detect_unique_pages_dedup(pdf_source) -> list[int]:
+    """
+    Run strategy auto-detection and Cluster-Jump exponential + binary search
+    on pdf_source (either in-memory bytes or file path str).
+    Uses open_pdf_smart() for zero-latency network reading.
+    Returns list of 1-based page numbers representing the first page of each unique cluster.
+    """
+    doc = open_pdf_smart(pdf_source)
+    try:
+        total_pages = len(doc)
+        if total_pages == 0:
+            return []
+
+        # Trang 0: Tự động phát hiện chiến lược TEXT hay BARCODE
+        page0 = doc.load_page(0)
+        found_code = _extract_text_id(page0)
+        if found_code:
+            strategy = "TEXT"
+            crop_rect = None
+        else:
+            crop_rect, found_code = _determine_crop_rect(page0)
+            strategy = "BARCODE"
+
+        kept_pages: list[int] = []
+        seen_codes: set[str] = set()
+        cluster_start = 0
+
+        while cluster_start < total_pages:
+            if cluster_start == 0:
+                current_code = found_code
+            else:
+                current_code = _get_page_code(doc, cluster_start, strategy, crop_rect)
+
+            if current_code and current_code not in seen_codes:
+                seen_codes.add(current_code)
+                kept_pages.append(cluster_start + 1)  # 1-based page index
+
+            if total_pages == 1:
+                break
+
+            # Nhảy phi mã + tìm kiếm nhị phân đến đầu cụm kế tiếp O(K * log(N/K))
+            next_start = _find_next_cluster_start(
+                doc, cluster_start, current_code, strategy, crop_rect
+            )
+            cluster_start = next_start
+
+        return kept_pages
+    finally:
+        doc.close()
+

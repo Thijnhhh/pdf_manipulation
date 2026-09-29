@@ -341,8 +341,9 @@
         const isRfid = line === 'RFID HT';
         const isTrim = line === 'Trim';
         const isPflThermal = line === 'PFL THERMAL';
+        const isRfidSb = line === 'RFID SB';
         // Modules that never use Google Drive (UNC/local only)
-        const isUncOnly = isRfid || isTrim || isPflThermal;
+        const isUncOnly = isRfid || isTrim || isPflThermal || isRfidSb;
 
         // ── Toolbar ──────────────────────────────────────────────
         const titles = {
@@ -350,12 +351,14 @@
             'RFID HT': 'PDF Merger (RFID HT)',
             'Trim': 'Trim Adidas',
             'PFL THERMAL': 'PDF Merger (PFL Thermal)',
+            'RFID SB': 'PDF Merger (RFID SB UQ)',
         };
         const icons = {
             'PFL': '📑',
             'RFID HT': '🏷️',
             'Trim': '✂️',
             'PFL THERMAL': '🌡️',
+            'RFID SB': '🔖',
         };
         if (dom.mergerToolbarTitle) dom.mergerToolbarTitle.textContent = titles[line] || line;
         if (dom.mergerToolbarIcon) dom.mergerToolbarIcon.textContent = icons[line] || '📄';
@@ -395,9 +398,9 @@
             });
         }
 
-        // ── Fetch button visibility (Trim Adidas hides it) ───────
+        // ── Fetch button visibility (Trim Adidas & RFID SB hide it) ───────
         if (dom.btnFetch) {
-            dom.btnFetch.style.display = isTrim ? 'none' : '';
+            dom.btnFetch.style.display = (isTrim || isRfidSb) ? 'none' : '';
         }
 
         showScreen('input-screen');
@@ -1752,7 +1755,20 @@
     }
 
     function buildConfigGrid() {
+        const isRfidSb = state.currentLine === 'RFID SB';
         const rows = pdfTypes.map(t => {
+            if (isRfidSb && t.id === 'layout') {
+                return `
+                    <tr>
+                        <td style="padding:8px 12px;font-weight:600;">${escHtml(t.label)}</td>
+                        <td colspan="3" style="padding:6px 8px;">
+                            <span style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;font-size:0.82rem;font-weight:600;background:rgba(79,70,229,0.08);color:#4f46e5;border-radius:var(--radius-sm);border:1px solid rgba(79,70,229,0.2);">
+                                🔒 Deduplicate (13-digit ID / Barcode)
+                            </span>
+                        </td>
+                    </tr>
+                `;
+            }
             const defaults = DEFAULT_CONFIG[t.id] || [];
             const p1 = defaults[0] || '';
             const p2 = defaults[1] || '';
@@ -2035,7 +2051,8 @@
             JSON.stringify(exceptions),
             Boolean(adState.ocrEnabled),
             flagsJson,
-            jobMapJson
+            jobMapJson,
+            state.currentLine
         );
     }
 
@@ -2386,16 +2403,58 @@
             `;
         }).join('');
 
-        // Fetch thumbnails one by one
-        pageRequests.forEach(({ typeId, pageNum, fileIdx, fileId }) => {
-            window.pywebview.api.fetch_page_range(
-                sol, typeId,
-                fileId || state.folderInputs[typeId],
-                state.isDrive[typeId] === true,
-                pageNum, 1, fileIdx
+        // Fetch thumbnails directly from in-memory sub-docs (Zero-Network Instant Preview)
+        if (window.pywebview && window.pywebview.api && window.pywebview.api.fetch_auto_detect_preview) {
+            window.pywebview.api.fetch_auto_detect_preview(
+                sol,
+                JSON.stringify(solAssembly)
             );
-        });
+        } else {
+            // Fallback: fetch thumbnails one by one via disk/network
+            pageRequests.forEach(({ typeId, pageNum, fileIdx, fileId }) => {
+                window.pywebview.api.fetch_page_range(
+                    sol, typeId,
+                    fileId || state.folderInputs[typeId],
+                    state.isDrive[typeId] === true,
+                    pageNum, 1, fileIdx
+                );
+            });
+        }
     }
+
+    // Zero-Network Instant Auto Detect Preview Handler
+    window._onAutoDetectPreviewReady = function (sol, cardsMap) {
+        if (!dom.adPreviewModal || !dom.adPreviewModal.classList.contains('active')) return;
+        cardsMap = cardsMap || {};
+        Object.keys(cardsMap).forEach(cardId => {
+            const card = document.getElementById(cardId);
+            if (card) {
+                const body = card.querySelector('.ad-preview-card-body');
+                if (body) {
+                    body.innerHTML = `
+                        <img src="${cardsMap[cardId]}" style="width:100%;height:auto;display:block;box-shadow:0 4px 14px rgba(0,0,0,0.15);border-radius:4px;" alt="Page preview" />
+                    `;
+                }
+            }
+        });
+
+        // Fallback for any cards not rendered from RAM cache
+        const solAssembly = adState.assembly[sol] || {};
+        pdfTypes.forEach(t => {
+            const pages = solAssembly[t.id] || [];
+            pages.forEach(entry => {
+                const cardId = `ad-preview-card-${t.id}-${entry.fileIdx}-${entry.pageIndex}`;
+                if (!cardsMap[cardId]) {
+                    window.pywebview.api.fetch_page_range(
+                        sol, t.id,
+                        entry.fileId || entry.filePath || state.folderInputs[t.id],
+                        state.isDrive[t.id] === true,
+                        entry.pageIndex, 1, entry.fileIdx
+                    );
+                }
+            });
+        });
+    };
 
     // Override _onPageRangeReady to also update continuous preview cards
     const _origOnPageRangeReady = window._onPageRangeReady;
@@ -2643,6 +2702,12 @@
         document.getElementById('card-combine').addEventListener('click', () => {
             showScreen('combine-screen');
         });
+        const cardMergerRfidSb = document.getElementById('card-merger-rfid-sb');
+        if (cardMergerRfidSb) {
+            cardMergerRfidSb.addEventListener('click', () => {
+                enterMergerModule('RFID SB');
+            });
+        }
 
         // Changelog box collapse / reopen
         const changelogBox = document.getElementById('dashboard-changelog-box');

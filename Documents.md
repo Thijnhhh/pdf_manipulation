@@ -3,11 +3,11 @@
 ---
 
 ## Document Information
-* **Document Version:** 1.2.3
+* **Document Version:** 1.3.0
 * **Target Application:** PDF Manipulation Tool Desktop Edition
 * **Target Operating System:** Microsoft Windows 10 / 11 (64-bit)
 * **Author / Ownership:** Thinh Phung / Avery Dennison (AD) RFID FRU Team
-* **Last Updated:** 2026-09-24
+* **Last Updated:** 2026-09-29
 
 ---
 
@@ -39,7 +39,7 @@
 # 1. Overview
 
 ### 1.1 Purpose & High-Level Scope
-The **PDF Manipulation Desktop Application** is an enterprise-grade utility developed for the Avery Dennison (AD) RFID / Fast React Utility (FRU) division. The software automates the extraction, sorting, deduplication, merging, and assembly of complex manufacturing and sales documentation PDFs (Packaging Front Layouts / PFL, Sales Order Lines / SOL, engineering film drawings, production dockets, and Trim Adidas Ticket Express bundles).
+The **PDF Manipulation Desktop Application** is an enterprise-grade utility developed for the Avery Dennison (AD) / Fast React Utility (FRU) division. The software automates the extraction, sorting, deduplication, merging, and assembly of complex manufacturing and sales documentation PDFs (Packaging Front Layouts / PFL, Sales Order Lines / SOL, engineering film drawings, production dockets, and Trim Adidas Ticket Express bundles).
 
 #### Core Problems Solved:
 1. **Google Apps Script (GAS) Execution Limits:** The legacy cloud-scripted solution suffered from Google's strict 6-minute maximum execution timeout, Drive API rate limits, and slow web roundtrips when parsing multi-hundred-page PDFs.
@@ -51,6 +51,7 @@ The **PDF Manipulation Desktop Application** is an enterprise-grade utility deve
 * **PDF Merger (PFL):** Automated multi-folder barcode matching, layout sorting, front-drawing prioritization, and an interactive 3-panel manual assembly workspace. Presets read single-column SOL lists (`A:A`). Layout folders support Google Drive and local UNC.
 * **PDF Merger (RFID HT):** Dedicated module for the RFID Heat Transfer line. Presets read 4 columns (`SOL`, `Job`, `RB`, `Flag`). SOview scanning executes single-pass Barcode Range Scan for `Flag=True` items while maintaining Fast Mode / OCR Mode for `Flag=False`. Layout folder is local UNC, matched 1-to-1 by `Job` code, extracting all pages directly without barcode/OCR scanning.
 * **PDF Merger (PFL Thermal):** Specialized module for PFL Thermal production. Treats all SOLs uniformly under `Flag=True` (Barcode Range Scan mode), auto-disables the OCR toggle in the UI, and accurately isolates multi-page continuation runs.
+* **PDF Merger (RFID SB UQ):** Specialized workflow for Uniqlo RFID SB manufacturing lines. Automatically crawls network layout repositories via boundary-checked matching (`_find_pdfs_by_sol_boundary`) to avoid false-positive sub-string SOL collisions, preloads layout PDFs concurrently, and performs in-flight Cluster-Jump deduplication (`detect_unique_pages_dedup`) directly in memory.
 * **Trim Adidas:** Specialized workflow integrating BigQuery stored procedure `get_TE` with Service Account authentication. Fetches `Ticket Express Number` and `Ordered Item`, validates missing records, parses SOview PDFs using a 3-Pattern regex engine (`*SO*`, `FOR MFG/PURCHASE X/Y`, `Page X of Y`), locates matching Ticket Express (TE) pages via `*TE*` text barcodes, and automatically pairs SOview and TE pages into ordered exports.
 * **PDF Deduplicate:** High-speed removal of identical repeated pages in production docket batches using fast-path text regex and an $O(K \log(N/K))$ exponential cluster-jump algorithm.
 * **PDF Combine:** Recursive multi-folder search for SOL matching, parallel network pre-fetching, and bulk split/merge assembly.
@@ -795,19 +796,68 @@ Adoption scope:
 
 ---
 
+#### 10. RFID SB UQ Workflow & Boundary-Matched File Resolution (`backend/pdf_detector.py`)
+
+The **PDF Merger (RFID SB UQ)** module introduces an automated dual-document assembly pipeline tailored for Uniqlo RFID SB lines:
+1. **Filename Boundary Checking (`_find_pdfs_by_sol_boundary`):**
+   Uniqlo layout PDFs are structured as `{SOL}_{...rest}.pdf` (e.g. `132337478-1_16489676_4-249177-333-00_...pdf`). Standard sub-string matching often leads to severe false-positive collisions (e.g. `144187563-1` falsely capturing `144187563-10_...pdf`). The dedicated crawler crawls network folders via 32 concurrent threads and strictly requires the terminating character immediately after the SOL code to be in `('_', '.', ' ')` or at string boundary:
+   ```python
+   end = idx + len(sol_l)
+   if end < len(fname_norm) and fname_norm[end] not in ('_', '.', ' '):
+       continue
+   ```
+2. **Parallel Small-First Preload + In-Flight Cluster-Jump Deduplication (`Case C`):**
+   Layout files for all matched SOLs are sorted by file size (`Small-First`) to maximize pipeline responsiveness. Files are preloaded into memory and immediately deduplicated in-flight using `detect_unique_pages_dedup()` from `pdf_deduplicator.py`.
+3. **Adaptive Worker Tuning for High-Latency Network Shares:**
+   Benchmarking across enterprise SMB shares revealed severe WAN bandwidth saturation when streaming heavy PDFs (6MB–27MB) over 4 concurrent workers on servers like `FSPDVN06` (~2.95 MB/s ceiling). The pipeline dynamically tunes layout concurrency to `max_workers = min(2, len(sorted_net_files))` for RFID SB to avoid TCP/SMB socket contention.
+
+---
+
+#### 11. Smart Adaptive I/O Engine & Remote Path Detection (`backend/pdf_processor.py`)
+
+Introduced in v1.3.0 to replace ad-hoc file reading and solve SMB network latency contention across all modules:
+1. **Network Location Detection (`is_network_path`):**
+   Inspects file path representations on Windows:
+   - UNC Shares: Evaluates prefix `\\` (e.g. `\\server\share\...`).
+   - Mapped Remote Drives: Uses Win32 API `ctypes.windll.kernel32.GetDriveTypeW(drive + '\\') == 4` (`DRIVE_REMOTE`).
+2. **Adaptive Document Loader (`open_pdf_smart`):**
+   ```python
+   def open_pdf_smart(source: str | bytes | bytearray) -> fitz.Document:
+       if isinstance(source, (bytes, bytearray)):
+           return fitz.open(stream=source, filetype="pdf")
+       if is_network_path(source):
+           pdf_bytes = read_pdf_bytes_smart(source)
+           return fitz.open(stream=pdf_bytes, filetype="pdf")
+       else:
+           return fitz.open(source)
+   ```
+   - For network locations, executes a single sequential read (`read_pdf_bytes_smart`) into RAM before handing the byte stream to PyMuPDF. This completely eliminates thousands of small, random `fseek` round-trips over SMB, producing a **30x–570x speedup** on multi-page files.
+   - For local SSD/HDD drives, opens directly via `fitz.open(path)` to leverage Windows OS page cache and zero memory duplication.
+
+---
+
+#### 12. Zero-Network Instant Auto Detect Preview (`backend/bridge.py` & `assets/app.js`)
+
+In previous versions, opening the Continuous Vertical Viewer modal (`ad-preview-modal`) triggered repetitive network reads to fetch page thumbnails via `fetch_page_range`. In v1.3.0:
+* **In-RAM Sub-Document Rendering:** `fetch_auto_detect_preview(sol, sol_assembly_json)` accesses pre-extracted PDF byte buffers already present in `AUTO_DETECT_RAM_CACHE`.
+* **Instantaneous Response:** Renders thumbnails at 96 DPI JPEG directly from RAM buffers with zero network I/O, delivering instant preview rendering.
+* **Graceful Network Fallback:** If any page card is missing from the cache, `window._onAutoDetectPreviewReady` automatically falls back to `fetch_page_range`.
+
+---
+
 ### 4.3 Comprehensive Logic-to-UI Mapping
 
 | User Interaction / Event | UI Component & Screen | BridgeApi Method | Threading Model | Backend Action & UI State Update |
 | :--- | :--- | :--- | :--- | :--- |
 | Application Launch | `#app-loading-overlay` | `get_initial_data("PFL")`<br>`get_local_version()` | Synchronous / Async Init | Ingests Google Sheets presets for default line; updates local version badge; fades out loading overlay. |
-| Select Module Card (Dashboard) | `.module-card[data-module="merger-pfl"]`<br>`.module-card[data-module="merger-rfid"]`<br>`.module-card[data-module="merger-thermal"]`<br>`.module-card[data-module="merger-trim"]`<br>`#dashboard-screen` | `get_initial_data(line)` | Main Thread / Worker | Switches `.screen.active` to `input-screen`; sets `state.currentLine` (`"PFL"`, `"RFID HT"`, `"PFL THERMAL"`, or `"TRIM ADIDAS"`); adapts UI (hides Drive toggles for UNC-only lines; hides OCR toggle for Thermal/Trim); fetches presets filtered by `Line`. |
+| Select Module Card (Dashboard) | `.module-card[data-module="merger-pfl"]`<br>`.module-card[data-module="merger-rfid"]`<br>`.module-card[data-module="merger-thermal"]`<br>`.module-card[data-module="merger_rfid_sb"]`<br>`.module-card[data-module="merger-trim"]`<br>`#dashboard-screen` | `get_initial_data(line)` | Main Thread / Worker | Switches `.screen.active` to `input-screen`; sets `state.currentLine` (`"PFL"`, `"RFID HT"`, `"PFL THERMAL"`, `"RFID SB"`, or `"TRIM ADIDAS"`); adapts UI (hides Drive toggles for UNC-only lines; hides OCR toggle for Thermal/Trim/RFID SB; locks RFID SB layout to Deduplicate); fetches presets filtered by `Line`. |
 | Run Auto Detect (Trim Adidas) | `#btn-auto-detect`<br>`#input-screen` | `run_auto_detect_trim(...)` | Background Thread (`_run_in_thread`) | Calls BigQuery `get_TE`; performs 3-Pattern SOview & TE barcode matching; opens `trim-results-screen`. |
 | Click "Fetch & Open" | `#btn-fetch`<br>`#input-screen` | `pre_fetch_all_pdfs(...)` | Background Thread (`_run_in_thread`) | Validates 1 SO = 1 Flag consistency (`validateRfidFlags`); resolves PDFs via `file_resolver`; pushes progress to `#prefetch-progress-modal`; navigates to `workspace-screen`. |
 | Select Preset Dropdown | `#preset-select`<br>`#input-screen` | *Pure UI State* | Main Thread | Populates folder inputs; renders Preset SOL preview grid: 2 columns for PFL (`#`, `SOL Code`); 5 columns for RFID HT (`#`, `SOL Code`, `Job`, `RB`, `Flag`). |
 | Click "Fetch & Open" | `#btn-fetch`<br>`#input-screen` | `pre_fetch_all_pdfs(...)` | Background Thread (`_run_in_thread`) | Validates 1 SO = 1 Flag consistency (`validateRfidFlags`); resolves PDFs via `file_resolver`; pushes progress to `#prefetch-progress-modal`; navigates to `workspace-screen`. |
 | Click "Run Auto Detect" | `#btn-auto-detect`<br>`#input-screen` | `run_auto_detect(...)` | Background Thread (`_run_in_thread`) | Validates 1 SO = 1 Flag consistency; executes Three-Mode barcode stream & layout extraction; populates `AUTO_DETECT_RAM_CACHE`; opens `auto-detect-results-screen`. |
 | View Auto Detect Summary | `#ad-results-table`<br>`#auto-detect-results-screen` | *Pure UI State* | Main Thread | Renders summary grid with full text selection enabled (`user-select: text`) for direct copying of SOL codes and page counts; calculates total detected pages. |
-| Click Preview Button | `.ad-preview-btn`<br>`#auto-detect-results-screen` | `fetch_page_range(...)` | Background Thread / Async UI | Opens Continuous Vertical Viewer modal; displays all detected SOview and Layout pages in sequence; enables zoom scaling ($40\%$ to $300\%$). |
+| Click Preview Button | `.ad-preview-btn`<br>`#auto-detect-results-screen` | `fetch_auto_detect_preview(...)`<br>`fetch_page_range(...)` (fallback) | Background Thread / Async UI | Zero-Network Instant Preview: directly renders page thumbnails from `AUTO_DETECT_RAM_CACHE` with zero network I/O; opens Continuous Vertical Viewer modal; enables zoom scaling ($40\%$ to $300\%$). |
 | Click "Export Auto Detect" | `#btn-export-auto`<br>`#auto-detect-results-screen`| `export_from_auto_detect(...)`| Background Thread (`_run_in_thread`) | Directly concatenates pre-extracted sub-documents from `AUTO_DETECT_RAM_CACHE` with zero disk reads; saves output PDFs to destination directory. |
 | Select SOL in Workspace | `#sol-list-items`<br>`#workspace-screen` | `fetch_page_range(...)` | Background Thread | Loads first page thumbnail via `/temp/{uuid}.jpg`; initializes virtual grid in Panel 2. |
 | Scroll Thumbnail Grid | `#grid-viewport`<br>`#workspace-screen` | `fetch_page_range(...)` | Background Thread | Windowed rendering: loads page thumbnails on-demand as they scroll into view. |
@@ -824,7 +874,7 @@ Adoption scope:
 ### 4.4 Storage & Resource Management
 
 #### 1. In-Memory RAM Caches
-* `AUTO_DETECT_RAM_CACHE`: A global dictionary mapping `"{sol}_{typeId}"` to serialized `bytes` of pre-extracted PyMuPDF documents. Populated by inline in-RAM sub-document slicing (PDF Merger) and Stage 6 (Trim Adidas) using **Single-Pass I/O + Double Eviction** (v1.2.3). When exporting from Auto Detect, documents are written directly from RAM, eliminating redundant disk reads.
+* `AUTO_DETECT_RAM_CACHE`: A global dictionary mapping `"{sol}_{typeId}"` to serialized `bytes` of pre-extracted PyMuPDF documents. Populated by inline in-RAM sub-document slicing (PDF Merger) and Stage 6 (Trim Adidas) using **Single-Pass I/O + Double Eviction** (v1.2.3+). Serves as the high-speed backend for both zero-disk exports and Zero-Network Instant Previews (`fetch_auto_detect_preview`).
 * `_RESOLVED_FILES_CACHE`: Global dictionary storing file descriptors, paths, and downloaded byte buffers to prevent duplicate network roundtrips.
 * `file_entry["bytes"]`: Per-file in-memory buffer stored inside `batched_files` entries. Populated once during the single-pass preload scan loop, used for in-RAM detection, layout priority sorting, and sub-document slicing, then eagerly freed via early/late eviction to prevent memory accumulation.
 * Explicit Deallocation: Calling `clear_auto_detect_ram_cache()` purges all serialized document buffers from memory. All PyMuPDF document instances are managed using `try ... finally: doc.close()` blocks to guarantee immediate native memory release.
