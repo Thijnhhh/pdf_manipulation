@@ -59,7 +59,7 @@ from backend.sheets_service import get_all_initial_data
 
 # ── Bridge Tracing ───────────────────────────────────────────
 # Set to False to silence all trace output after manual testing.
-TRACING_ENABLED = True
+TRACING_ENABLED = False   
 
 _MAX_ARG_LEN = 40  # max chars per argument value in trace output
 
