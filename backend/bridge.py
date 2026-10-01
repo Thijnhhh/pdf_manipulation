@@ -55,6 +55,7 @@ from backend.pdf_processor import (
     set_temp_dir as set_pdf_temp_dir,
 )
 from backend.sheets_service import get_all_initial_data
+from backend.window_utils import flash_app_window
 
 
 # ── Bridge Tracing ───────────────────────────────────────────
@@ -160,6 +161,14 @@ class BridgeApi:
     def set_temp_dir(self, temp_dir: str) -> None:
         """Pass the temp directory down to the pdf_processor."""
         set_pdf_temp_dir(temp_dir)
+
+    @_trace
+    def flash_window(self) -> bool:
+        """
+        Flash the taskbar icon to attract user attention when a task completes
+        while the app window is in the background.
+        """
+        return flash_app_window(self._window, window_title="PDF Manipulation Tool")
 
     # ── 1. Initial Data ──────────────────────────────────────
 
@@ -821,6 +830,7 @@ class BridgeApi:
 
                 payload = _json_str({"success": True, "tracing_enabled": TRACING_ENABLED, **result})
                 self._eval(f"window._onAutoDetectDone({payload})")
+                self.flash_window()
 
             except Exception as exc:
                 traceback.print_exc()
@@ -830,6 +840,7 @@ class BridgeApi:
                 payload = _json_str({"success": False, "error": err_msg,
                                      "assembly": {}, "errors": []})
                 self._eval(f"window._onAutoDetectDone({payload})")
+                self.flash_window()
 
         _run_in_thread(_task)
 
@@ -1324,6 +1335,7 @@ class BridgeApi:
                     "bq_error":        bq_error,
                 })
                 self._eval(f"window._onAutoDetectDone({payload})")
+                self.flash_window()
 
             except Exception as exc:
                 traceback.print_exc()
@@ -1334,6 +1346,7 @@ class BridgeApi:
                     "bq_metadata": {}, "missing_data": {},
                 })
                 self._eval(f"window._onAutoDetectDone({payload})")
+                self.flash_window()
 
         _run_in_thread(_task)
 

@@ -2214,6 +2214,149 @@
         }
         // ── End Trim Adidas branch ────────────────────────────────
 
+        // ── RFID SB: dedicated rich summary table ─────────────────
+        if (state.currentLine === 'RFID SB') {
+            const cardEl = resModal.querySelector('.config-card');
+            if (cardEl) cardEl.style.maxWidth = '880px';
+
+            const detailsEl = grid.closest('details');
+            if (detailsEl) detailsEl.open = true;
+            grid.style.display = 'block';
+
+            const sbMeta = result.rfid_sb_metadata || {};
+            const solList = Object.keys(result.assembly || {});
+
+            function formatFileLink(filePath, fileName) {
+                if (!filePath && !fileName) {
+                    return `<span style="color:var(--accent-danger,#ef4444);font-size:0.75rem;font-weight:500;">❌ Không tìm thấy file</span>`;
+                }
+                const name = fileName || (filePath ? filePath.split(/[\\/]/).pop() : '') || 'file.pdf';
+                const p = filePath || '';
+                let shortcut = p;
+                if (shortcut.length > 38) {
+                    shortcut = shortcut.substring(0, 16) + '...' + shortcut.substring(shortcut.length - 18);
+                }
+                return `
+                    <div style="margin-top:3px;line-height:1.3;">
+                        <span style="font-size:0.76rem;font-weight:600;color:var(--text-primary);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px;margin:0 auto;" title="${escHtml(name)}">${escHtml(name)}</span>
+                        ${p ? `<a href="#" class="ad-file-link" data-path="${escHtml(p)}" title="${escHtml(p)} (Click để mở file)" style="font-size:0.72rem;color:var(--accent-primary,#3b82f6);text-decoration:underline;cursor:pointer;display:inline-block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:250px;">🔗 ${escHtml(shortcut)}</a>` : ''}
+                    </div>
+                `;
+            }
+
+            let tableRows = solList.map(sol => {
+                const meta = sbMeta[sol] || {};
+                const svPages = meta.soview_pages || 0;
+                const svFile = meta.soview_file || '';
+                const svPath = meta.soview_path || '';
+
+                const lyRaw = meta.layout_raw_pages || 0;
+                const lyDedup = meta.layout_dedup_pages || 0;
+                const lyFile = meta.layout_file || '';
+                const lyPath = meta.layout_path || '';
+
+                const totalP = svPages + lyDedup;
+                const isComplete = svPages > 0 && lyDedup > 0;
+                const hasAnyPage = totalP > 0;
+
+                // Dedup string: user requested "VÍ DỤ : 48 --> 12 TRANG"
+                let dedupDisplay = '';
+                if (!lyFile && !lyPath) {
+                    dedupDisplay = `<span style="color:var(--accent-danger,#ef4444);font-size:0.75rem;font-weight:600;">❌ Không tìm thấy</span>`;
+                } else if (lyRaw > 0) {
+                    dedupDisplay = `<span style="font-weight:700;color:var(--accent-success,#10b981);font-size:0.85rem;">${lyRaw} → ${lyDedup} trang</span>`;
+                } else if (lyDedup > 0) {
+                    dedupDisplay = `<span style="font-weight:700;color:var(--accent-success,#10b981);font-size:0.85rem;">${lyDedup} trang</span>`;
+                } else {
+                    dedupDisplay = `<span style="color:var(--accent-warning,#f59e0b);font-size:0.75rem;font-weight:600;">⚠️ 0 trang</span>`;
+                }
+
+                // SOview display
+                let soviewDisplay = '';
+                if (!svFile && !svPath) {
+                    soviewDisplay = `<span style="color:var(--accent-danger,#ef4444);font-size:0.75rem;font-weight:600;">❌ Không tìm thấy</span>`;
+                } else if (svPages > 0) {
+                    soviewDisplay = `<span style="font-weight:700;color:var(--accent-success,#10b981);font-size:0.85rem;">${svPages} trang</span>`;
+                } else {
+                    soviewDisplay = `<span style="color:var(--accent-warning,#f59e0b);font-size:0.75rem;font-weight:600;">⚠️ 0 trang</span>`;
+                }
+
+                const previewBtn = hasAnyPage
+                    ? `<button class="btn btn--sm btn--secondary ad-preview-btn" data-sol="${escHtml(sol)}"
+                              style="font-size:0.75rem;padding:4px 10px;">👁 Preview</button>`
+                    : `<span style="color:var(--text-tertiary);font-size:0.75rem;">—</span>`;
+
+                return `
+                  <tr style="${!isComplete ? 'opacity:0.65;background:rgba(239,68,68,0.04);' : ''}">
+                    <td style="padding:10px 10px;font-weight:600;font-family:monospace;font-size:0.82rem;white-space:nowrap;vertical-align:middle;">
+                        ${escHtml(sol)}
+                        ${!isComplete ? '<span style="display:block;font-size:0.7rem;color:var(--accent-danger,#ef4444);font-weight:500;">Thiếu file / 0 trang</span>' : ''}
+                    </td>
+                    <td style="padding:10px 10px;text-align:center;vertical-align:middle;">
+                      ${soviewDisplay}
+                      ${formatFileLink(svPath, svFile)}
+                    </td>
+                    <td style="padding:10px 10px;text-align:center;vertical-align:middle;">
+                      ${dedupDisplay}
+                      ${formatFileLink(lyPath, lyFile)}
+                    </td>
+                    <td style="padding:10px 10px;text-align:center;font-weight:700;font-size:0.92rem;vertical-align:middle;">
+                      ${totalP > 0 ? totalP : '<span style="color:var(--text-tertiary);">0</span>'}
+                    </td>
+                    <td style="padding:10px 10px;text-align:center;vertical-align:middle;">${previewBtn}</td>
+                  </tr>`;
+            }).join('');
+
+            grid.innerHTML = `
+              <table style="width:100%;border-collapse:collapse;font-size:0.83rem;">
+                <thead>
+                  <tr style="background:var(--bg-tertiary);">
+                    <th style="padding:10px;text-align:left;width:16%;">SOL Code</th>
+                    <th style="padding:10px;text-align:center;width:34%;">SOview (File &amp; Số trang)</th>
+                    <th style="padding:10px;text-align:center;width:34%;">Layout (File &amp; Dedup)</th>
+                    <th style="padding:10px;text-align:center;width:8%;">Tổng</th>
+                    <th style="padding:10px;text-align:center;width:8%;">Preview</th>
+                  </tr>
+                </thead>
+                <tbody>${tableRows}</tbody>
+              </table>`;
+
+            const completeCount = solList.filter(s => {
+                const m = sbMeta[s] || {};
+                return (m.soview_pages || 0) > 0 && (m.layout_dedup_pages || 0) > 0;
+            }).length;
+            summaryText.innerHTML = `RFID SB detection complete. Found full pages for <strong>${completeCount} / ${solList.length}</strong> SOLs.`;
+
+            if (result.errors && result.errors.length > 0) {
+                const errMsgs = result.errors.map(e => `${e.sol} (${e.typeId}): ${e.error}`).join('; ');
+                showToast('⚠️ Scan issues: ' + errMsgs, 'warning', 6000);
+            }
+
+            resModal.classList.add('active');
+            if (result.tracing_enabled && window._adStartTime) {
+                showTracingBenchmarkToast(window._adStartTime, new Date());
+                window._adStartTime = null;
+            }
+
+            // Wire preview buttons
+            grid.querySelectorAll('.ad-preview-btn').forEach(btn => {
+                btn.addEventListener('click', () => openPreviewModal(btn.dataset.sol));
+            });
+
+            // Wire file open links
+            grid.querySelectorAll('.ad-file-link').forEach(link => {
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const p = link.dataset.path;
+                    if (p && window.pywebview && window.pywebview.api && window.pywebview.api.open_file) {
+                        window.pywebview.api.open_file(p);
+                    }
+                });
+            });
+            return;
+        }
+        // ── End RFID SB branch ────────────────────────────────────
+
         // Standard PFL / RFID HT / PFL Thermal results display
         let foundCount = 0;
         grid.innerHTML = '';

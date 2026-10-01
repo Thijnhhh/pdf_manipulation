@@ -486,18 +486,19 @@ def deduplicate_batch(
 
 # ── Public Detection API (Cluster-Jump) ─────────────────────
 
-def detect_unique_pages_dedup(pdf_source) -> list[int]:
+def detect_unique_pages_dedup(pdf_source, return_total: bool = False) -> list[int] | tuple[list[int], int]:
     """
     Run strategy auto-detection and Cluster-Jump exponential + binary search
     on pdf_source (either in-memory bytes or file path str).
     Uses open_pdf_smart() for zero-latency network reading.
     Returns list of 1-based page numbers representing the first page of each unique cluster.
+    If return_total is True, returns tuple of (kept_pages, total_pages).
     """
     doc = open_pdf_smart(pdf_source)
     try:
         total_pages = len(doc)
         if total_pages == 0:
-            return []
+            return ([], 0) if return_total else []
 
         # Trang 0: Tự động phát hiện chiến lược TEXT hay BARCODE
         page0 = doc.load_page(0)
@@ -532,6 +533,8 @@ def detect_unique_pages_dedup(pdf_source) -> list[int]:
             )
             cluster_start = next_start
 
+        if return_total:
+            return kept_pages, total_pages
         return kept_pages
     finally:
         doc.close()

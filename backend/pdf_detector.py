@@ -1250,7 +1250,10 @@ def run_auto_detect_all(
                     unique_net_files.values(),
                     key=lambda fe: os.path.getsize(fe.get("path", "")) if os.path.isfile(fe.get("path", "")) else 0
                 )
-                max_workers = min(2, len(sorted_net_files))
+                # Benchmark on \\FSPDVN06 (43ms avg RTT, SMB): sequential=0.33MB/s,
+                # 4w=1.69MB/s, 6w=2.31MB/s, 8w=2.33MB/s — sweet spot = 8 workers (2.3x vs 2w).
+                # RTT per-file ~300ms fixed overhead; more workers overlap the waiting.
+                max_workers = min(8, len(sorted_net_files))
 
                 def _pipeline_worker(f_entry: dict):
                     if cancel_event.is_set():
@@ -1267,15 +1270,16 @@ def run_auto_detect_all(
 
                         # ── PIPELINE: Dedup ngay lập tức trong RAM khi bytes vừa về ──
                         t_dedup = time.perf_counter()
-                        unique_pages = detect_unique_pages_dedup(b)
+                        unique_pages, raw_pages = detect_unique_pages_dedup(b, return_total=True)
                         f_entry["unique_pages"] = unique_pages
+                        f_entry["raw_pages"] = raw_pages
                         dt_dedup_ms = (time.perf_counter() - t_dedup) * 1000
 
                         if tracer.enabled:
                             print(
                                 f"[{tracer.prefix}] >> 2. Layout Pipeline   | {f_name[:32]:<32} | "
                                 f"{dt_load*1000:>8.1f}ms load ({throughput_mbs:.1f} MB/s) + "
-                                f"{dt_dedup_ms:>6.1f}ms dedup ({len(unique_pages)} pgs)",
+                                f"{dt_dedup_ms:>6.1f}ms dedup ({raw_pages} -> {len(unique_pages)} pgs)",
                                 flush=True
                             )
                     except Exception as _load_exc:
@@ -1293,7 +1297,7 @@ def run_auto_detect_all(
                     phase="2. Layout Pipeline",
                     target=f"{len(sorted_net_files)} files ({total_layout_kb // 1024} MB)",
                     t0=t_pipeline_start,
-                    details=f"Parallel Small-First (4 workers) @ {throughput_total:.1f} MB/s [Load + Dedup]"
+                    details=f"Parallel Small-First ({max_workers} workers) @ {throughput_total:.1f} MB/s [Load + Dedup]"
                 )
 
             # ── Map kết quả vào assembly ──────────────────────────────────────
@@ -1308,19 +1312,22 @@ def run_auto_detect_all(
                     _src_path = file_result.get("path", "")
 
                     unique_pages = file_result.get("unique_pages")
+                    raw_pages = file_result.get("raw_pages")
                     if unique_pages is None:
                         # Fallback nếu file local hoặc pipeline chưa kịp chạy
                         pdf_source = file_result.get("bytes") or _src_path
                         if pdf_source:
                             try:
-                                unique_pages = detect_unique_pages_dedup(pdf_source)
+                                unique_pages, raw_pages = detect_unique_pages_dedup(pdf_source, return_total=True)
                                 file_result["unique_pages"] = unique_pages
+                                file_result["raw_pages"] = raw_pages
                             except Exception as exc:
                                 errors.append({"sol": sol, "typeId": "layout", "error": str(exc)})
                                 continue
                         else:
                             continue
 
+                    raw_pages = raw_pages if raw_pages is not None else len(unique_pages)
                     file_path = file_result.get("path") or ""
                     file_id = file_result.get("file_id") or file_path or file_name
                     seen = set((e["fileIdx"], e["pageIndex"]) for e in assembly[sol]["layout"])
@@ -1334,6 +1341,7 @@ def run_auto_detect_all(
                                 "filePath": file_path,
                                 "fileId": file_id,
                                 "method": "layout_dedup",
+                                "rawPages": raw_pages,
                             })
                             seen.add((file_idx, p))
                     assembly[sol]["layout"].sort(key=lambda e: (e["fileIdx"], e["pageIndex"]))
@@ -1393,7 +1401,10 @@ def run_auto_detect_all(
                 net_soviews,
                 key=lambda fe: os.path.getsize(fe.get("path", "")) if os.path.isfile(fe.get("path", "")) else 0
             )
-            so_workers = min(4, len(sorted_soviews))
+            # Benchmark on \\fppdvn03 (34ms avg RTT, SMB): bottleneck is per-connection latency,
+            # not bandwidth. Each file costs ~100ms fixed RTT overhead regardless of size.
+            # Results: 4w→559ms, 8w→364ms, 12w→255ms, 16w→275ms (sweet spot = 12 workers).
+            so_workers = min(12, len(sorted_soviews))
 
             def _preload_so_worker(fe: dict):
                 if cancel_event.is_set():
@@ -1422,7 +1433,7 @@ def run_auto_detect_all(
                 phase=f"2A. Preload {type_id}",
                 target=f"{len(sorted_soviews)} files ({total_so_kb} KB)",
                 t0=t_preload_so,
-                details=f"Parallel Small-First (4 workers) @ {throughput_so:.1f} MB/s"
+                details=f"Parallel Small-First ({so_workers} workers) @ {throughput_so:.1f} MB/s"
             )
 
         for file_key, uf in unique_files.items():
@@ -1719,6 +1730,59 @@ def run_auto_detect_all(
         details=f"{cached_count} sub-documents ({total_ram_kb} KB) -- zero network I/O"
     )
 
+    rfid_sb_metadata: dict = {}
+    if line == "RFID SB":
+        layout_files_all = batched_files.get("layout", {})
+        soview_files_all = batched_files.get("soview", {})
+        for sol in clean_sol_list:
+            sv_entries = assembly.get(sol, {}).get("soview", [])
+            ly_entries = assembly.get(sol, {}).get("layout", [])
+
+            # SOview file & page resolution
+            so = parse_so(sol)
+            found_sv = [f for f in soview_files_all.get(so, []) if f.get("found")] if so else []
+            if sv_entries:
+                sv_file = sv_entries[0].get("fileName", "")
+                sv_path = sv_entries[0].get("filePath", "")
+                sv_pages = len(sv_entries)
+            elif found_sv:
+                sv_file = found_sv[0].get("name", "")
+                sv_path = found_sv[0].get("path", "")
+                sv_pages = 0
+            else:
+                sv_file = ""
+                sv_path = ""
+                sv_pages = 0
+
+            # Layout file & page resolution
+            found_ly = [f for f in layout_files_all.get(sol, []) if f.get("found")]
+            if found_ly:
+                ly_file = found_ly[0].get("name", "")
+                ly_path = found_ly[0].get("path", "")
+                raw_p = found_ly[0].get("raw_pages", 0)
+                if not raw_p and ly_entries:
+                    raw_p = ly_entries[0].get("rawPages", len(ly_entries))
+            elif ly_entries:
+                ly_file = ly_entries[0].get("fileName", "")
+                ly_path = ly_entries[0].get("filePath", "")
+                raw_p = ly_entries[0].get("rawPages", len(ly_entries))
+            else:
+                ly_file = ""
+                ly_path = ""
+                raw_p = 0
+
+            dedup_p = len(ly_entries)
+
+            rfid_sb_metadata[sol] = {
+                "soview_file": sv_file,
+                "soview_path": sv_path,
+                "soview_pages": sv_pages,
+                "layout_file": ly_file,
+                "layout_path": ly_path,
+                "layout_raw_pages": raw_p,
+                "layout_dedup_pages": dedup_p,
+            }
+
     tracer.print_summary()
-    return {"assembly": assembly, "errors": errors}
+    return {"assembly": assembly, "errors": errors, "rfid_sb_metadata": rfid_sb_metadata}
 

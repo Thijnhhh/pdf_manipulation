@@ -3,11 +3,11 @@
 ---
 
 ## Document Information
-* **Document Version:** 1.3.0
+* **Document Version:** 1.3.1
 * **Target Application:** PDF Manipulation Tool Desktop Edition
 * **Target Operating System:** Microsoft Windows 10 / 11 (64-bit)
 * **Author / Ownership:** Thinh Phung / Avery Dennison (AD) RFID FRU Team
-* **Last Updated:** 2026-09-29
+* **Last Updated:** 2026-10-01
 
 ---
 
@@ -838,10 +838,51 @@ Introduced in v1.3.0 to replace ad-hoc file reading and solve SMB network latenc
 
 #### 12. Zero-Network Instant Auto Detect Preview (`backend/bridge.py` & `assets/app.js`)
 
-In previous versions, opening the Continuous Vertical Viewer modal (`ad-preview-modal`) triggered repetitive network reads to fetch page thumbnails via `fetch_page_range`. In v1.3.0:
+In previous versions, opening the Continuous Vertical Viewer modal (`ad-preview-modal`) triggered repetitive network reads to fetch page thumbnails via `fetch_page_range`. In v1.3.0+:
 * **In-RAM Sub-Document Rendering:** `fetch_auto_detect_preview(sol, sol_assembly_json)` accesses pre-extracted PDF byte buffers already present in `AUTO_DETECT_RAM_CACHE`.
 * **Instantaneous Response:** Renders thumbnails at 96 DPI JPEG directly from RAM buffers with zero network I/O, delivering instant preview rendering.
 * **Graceful Network Fallback:** If any page card is missing from the cache, `window._onAutoDetectPreviewReady` automatically falls back to `fetch_page_range`.
+
+---
+
+#### 13. Multiline Wrapped Page Number Recovery (`backend/trim_service.py`)
+
+Introduced in v1.3.1 to solve a critical page detection drop in multi-page Trim Adidas orders ($\ge 100$ pages):
+1. **Root Cause Analysis:**
+   In standard Oracle/SAP Trim SOview forms, the page counter box is bounded to ~6 characters. For single- or double-digit pages (`1/126` to `99/126`), the counter fits on a single text line. When reaching three-digit pages (`100/126` to `126/126`), the 7-character string overflows, causing PyMuPDF to extract text with the final digit wrapped onto the next line (e.g. `104/12\n6`).
+2. **Regex Expansion (`_P2_REGEX`):**
+   ```python
+   _P2_REGEX = re.compile(
+       r"FOR (MANUFACTURING(?:/PURCHASE)?|PURCHASE)(?:\s*[\r\n]+\s*|\s+)(\d{1,3})\s*/\s*(\d{1,3}(?:\s*[\r\n]+\s*\d+)?)",
+       re.MULTILINE,
+   )
+   ```
+3. **Whitespace Sanitization & Safe Integer Conversion:**
+   In `_extract_page_patterns()`, captures for both `n1` and `n2` are sanitized via `re.sub(r"\s+", "", ...)` before `int()` conversion. This eliminates `ValueError` exceptions caused by embedded linebreaks (`"12\n6"` $\rightarrow$ `"126"`) and ensures correct numeric evaluation (`104 <= 126`), restoring 100% page attribution across all 126 pages.
+
+---
+
+#### 14. Native Windows Taskbar Attention Notification (`backend/window_utils.py` & `backend/bridge.py`)
+
+Added in v1.3.1 to alert operators when extensive background operations finish while the application window is minimized or inactive:
+1. **Direct Win32 API Integration (`ctypes`):**
+   Calls `user32.FlashWindowEx` using `FLASHWINFO` struct with flag `FLASHW_TIMERNOFG` (`0x0000000C`), which continuously flashes the application icon on the Windows Taskbar until the operator brings the window to the foreground.
+2. **Safe HWND Resolution (`get_window_hwnd`):**
+   Resolves the native window handle by probing `window.native.Handle` (WinForms / WebView2) with fallback to `user32.FindWindowW(None, window_title)`.
+3. **Automated Notification Hook:**
+   `BridgeApi.flash_window()` is invoked automatically upon completion of long-running operations: `run_auto_detect` (PDF Merger) and `run_auto_detect_trim` (Trim Adidas).
+
+---
+
+#### 15. RFID SB Latency-Optimized Worker Scaling & Granular Inspection Grid
+
+Introduced in v1.3.1 for the RFID SB workflow:
+1. **High-Latency SMB Worker Tuning:**
+   Empirical testing across remote UNC shares (`\\fppdvn03`) demonstrated that per-file connection handshakes cost ~100ms fixed RTT overhead. Scaling SOview preloading concurrency from 4 to 12 workers reduced total preload latency from ~559ms to ~255ms.
+2. **Dual Page Metric Extraction:**
+   `pdf_deduplicator.detect_unique_pages_dedup()` supports `return_total=True`, returning `(kept_pages, total_pages)` to capture both raw and deduplicated counts in a single pass.
+3. **Granular Review Grid (`assets/app.js`):**
+   Provides a comprehensive breakdown per SOL: SOview file name & page count, Layout file name & deduplication ratio (`raw -> kept`), total combined pages, warning tags for missing files / zero pages, and direct preview/file open actions.
 
 ---
 

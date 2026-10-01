@@ -21,7 +21,7 @@ EXACT_TE_HEADER = "Ticket Express Number"
 
 _P1_REGEX = re.compile(r"\*\d{9}\*")
 _P2_REGEX = re.compile(
-    r"FOR (MANUFACTURING(?:/PURCHASE)?|PURCHASE)(?:\s*[\r\n]+\s*|\s+)(\d{1,3})\s*/\s*(\d{1,3})",
+    r"FOR (MANUFACTURING(?:/PURCHASE)?|PURCHASE)(?:\s*[\r\n]+\s*|\s+)(\d{1,3})\s*/\s*(\d{1,3}(?:\s*[\r\n]+\s*\d+)?)",
     re.MULTILINE,
 )
 _P3_REGEX = re.compile(r"Page\s+(\d{1,3})\s*of\s*(\d{1,3})")
@@ -224,7 +224,8 @@ def _extract_page_patterns(page_text: str) -> tuple:
     p2_matches = []
     for m in _P2_REGEX.finditer(page_text):
         form_type = m.group(1)
-        n1, n2 = m.group(2), m.group(3)
+        n1 = re.sub(r"\s+", "", m.group(2))
+        n2 = re.sub(r"\s+", "", m.group(3))
         if int(n1) <= int(n2):
             p2_matches.append(f"FOR {form_type} {n1}/{n2}")
     p2_str = "; ".join(list(dict.fromkeys(p2_matches)))

@@ -3,6 +3,33 @@
 All notable changes to this project will be documented in this file.
 
 
+## [1.3.1] - 2026-10-01
+### Added
+- **Native Windows Taskbar Flash Notification (`backend/window_utils.py` & `bridge.py`):**
+  - Added dedicated Win32 integration module using `ctypes` (`FlashWindowEx`, `GetForegroundWindow`, `FindWindowW`).
+  - Added `flash_window()` to `BridgeApi` using flag `FLASHW_TIMERNOFG` to flash the taskbar icon when background operations (`run_auto_detect`, `run_auto_detect_trim`) complete while the app window is in the background.
+  - Included `backend.window_utils` in `build.spec` PyInstaller hidden imports.
+- **RFID SB Dedicated Review Grid (`assets/app.js`):**
+  - Implemented custom tabular summary for RFID SB workflow displaying per-SOL resolution of SOview files, Layout files, raw page counts vs. deduplicated page counts (`raw -> kept`), total assembly pages, and direct preview/file opening triggers.
+  - Highlights incomplete SOLs or missing files with clear red indicator tags.
+- **Dual-Metric Page Retrieval in Deduplicator (`backend/pdf_deduplicator.py`):**
+  - Added optional `return_total=True` parameter to `detect_unique_pages_dedup()`, returning `(kept_pages, total_pages)` to capture raw page counts without an extra PDF open cycle.
+
+### Fixed
+- **Pattern 2 Wrapped Page Number Parsing in Trim Adidas (`backend/trim_service.py`):**
+  - Resolved an issue where 3-digit page counts (e.g. `100/126` to `126/126`) caused the total page number to wrap onto a new line (e.g. `104/12\n6`) due to narrow form text boxes in PDFs.
+  - Updated `_P2_REGEX` to allow optional wrapped digits in the denominator: `(\d{1,3}(?:\s*[\r\n]+\s*\d+)?)`.
+  - Added whitespace sanitization (`re.sub(r"\s+", "", ...)`) for both numerator and denominator in `_extract_page_patterns` prior to `int()` casting, preventing `ValueError` and achieving 100% detection accuracy (126/126 pages) on multi-page orders.
+
+### Changed
+- **Optimized Network Preload Concurrency (`backend/pdf_detector.py`):**
+  - Increased SOview network preload workers from 4 to 12 (`so_workers = min(12, len(sorted_soviews))`) based on SMB round-trip latency benchmarks on `\\fppdvn03`, reducing fixed connection overhead from ~559ms to ~255ms.
+  - Enhanced layout pipeline trace logging to display raw vs. deduplicated page conversion (`{raw_pages} -> {unique_pages} pgs`).
+- **Production Performance Tuning (`backend/bridge.py`):**
+  - Disabled `TRACING_ENABLED = False` to eliminate console I/O overhead during high-volume production operations.
+- **PE Metadata & Configuration Synchronization:**
+  - Upgraded application version to `1.3.1` across `config/version.json`, `version_info.txt`, `Documents.md`, and `assets/index.html`.
+
 ## [1.3.0] - 2026-09-29
 ### Added
 - **New Production Line Module — PDF Merger (RFID SB UQ):**
