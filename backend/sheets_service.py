@@ -18,42 +18,22 @@ import time
 import gspread
 from google.oauth2.service_account import Credentials
 
-# ── Constants ───────────────────────────────────────────────
-SPREADSHEET_ID   = "1dUHAsSLSa1thA9Mmy-4_B2A9sXSqsILfRVOoz_s_gAk"
-USERS_SHEET_NAME = "Users_Preset"
+from backend.constants import (
+    get_credentials_path,
+    SPREADSHEET_ID,
+    USERS_SHEET_NAME,
+    SHEETS_SCOPES as SCOPES,
+)
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
-    "https://www.googleapis.com/auth/drive.readonly",
-]
-
-
-def _credentials_path() -> str:
-    """
-    Resolve credentials.json whether running as:
-      • a plain Python script  → next to config/
-      • a PyInstaller .exe     → sys._MEIPASS/config/
-    """
-    if getattr(sys, "frozen", False):          # PyInstaller bundle
-        base = sys._MEIPASS                    # type: ignore[attr-defined]
-    else:
-        base = os.path.join(os.path.dirname(__file__), "..")
-
-    path = os.path.normpath(os.path.join(base, "config", "credentials.json"))
-    if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"credentials.json not found at: {path}\n"
-            "Place your Google Service Account key in the config/ folder."
-        )
-    return path
-
+# Backward-compatibility alias
+_credentials_path = get_credentials_path
 
 _CLIENT_CACHE = None
 
 def _get_client() -> gspread.Client:
     global _CLIENT_CACHE
     if not _CLIENT_CACHE:
-        creds = Credentials.from_service_account_file(_credentials_path(), scopes=SCOPES)
+        creds = Credentials.from_service_account_file(get_credentials_path(), scopes=SCOPES)
         _CLIENT_CACHE = gspread.authorize(creds)
     return _CLIENT_CACHE
 
@@ -131,6 +111,7 @@ def get_all_initial_data(line: str = "PFL") -> dict:
             # ── Step 3: batch-fetch only the filtered preset sheets ──────────
             sol_map: dict = {}
             is_rfid_ht = target_line == "RFID HT"
+            is_pfl = target_line == "PFL"
 
             if filtered_presets:
                 preset_names = [p["name"] for p in filtered_presets]
@@ -138,10 +119,12 @@ def get_all_initial_data(line: str = "PFL") -> dict:
                 # Choose sheet range depending on module line
                 if is_rfid_ht:
                     ranges = [f"'{name}'!A:D" for name in preset_names]
+                elif is_pfl:
+                    ranges = [f"'{name}'!A:B" for name in preset_names]
                 else:
                     ranges = [f"'{name}'!A:A" for name in preset_names]
 
-                # ─ Helper: parse a single valueRange for PFL (SOL list) ──────
+                # ─ Helper: parse a single valueRange for general lines (SOL list) ──
                 def _parse_sol_rows(value_range: dict) -> list:
                     rows = value_range.get("values", [])
                     raw = [
@@ -150,6 +133,25 @@ def get_all_initial_data(line: str = "PFL") -> dict:
                         if row and row[0].strip()
                     ]
                     return list(dict.fromkeys(raw))  # deduplicate, preserve order
+
+                # ─ Helper: parse a single valueRange for PFL (A:B: sol, job_flag) ──
+                def _parse_pfl_rows(value_range: dict) -> list:
+                    rows = value_range.get("values", [])
+                    entries = []
+                    seen_sols: set = set()
+                    for row in rows[1:]:             # skip header
+                        if not row or not row[0].strip():
+                            continue
+                        sol = row[0].strip()
+                        if sol in seen_sols:
+                            continue
+                        seen_sols.add(sol)
+                        raw_flag = row[1].strip() if len(row) > 1 else ""
+                        entries.append({
+                            "sol":      sol,
+                            "job_flag": _to_bool(raw_flag),  # blank -> False
+                        })
+                    return entries
 
                 # ─ Helper: parse a single valueRange for RFID HT (A:D) ───────
                 def _parse_rfid_rows(value_range: dict) -> list:
@@ -180,6 +182,8 @@ def get_all_initial_data(line: str = "PFL") -> dict:
                         vr = value_ranges[i] if i < len(value_ranges) else {}
                         if is_rfid_ht:
                             sol_map[name] = _parse_rfid_rows(vr)
+                        elif is_pfl:
+                            sol_map[name] = _parse_pfl_rows(vr)
                         else:
                             sol_map[name] = _parse_sol_rows(vr)
                     batch_ok = True
@@ -193,10 +197,16 @@ def get_all_initial_data(line: str = "PFL") -> dict:
                 if not batch_ok:
                     for name in preset_names:
                         try:
-                            sheet_range = f"'{name}'!A:D" if is_rfid_ht else f"'{name}'!A:A"
+                            sheet_range = (
+                                f"'{name}'!A:D" if is_rfid_ht else
+                                f"'{name}'!A:B" if is_pfl else
+                                f"'{name}'!A:A"
+                            )
                             resp = spreadsheet.values_get(sheet_range)
                             if is_rfid_ht:
                                 sol_map[name] = _parse_rfid_rows(resp)
+                            elif is_pfl:
+                                sol_map[name] = _parse_pfl_rows(resp)
                             else:
                                 sol_map[name] = _parse_sol_rows(resp)
                         except Exception:

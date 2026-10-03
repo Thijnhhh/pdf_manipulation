@@ -3,11 +3,11 @@
 ---
 
 ## Document Information
-* **Document Version:** 1.3.1
+* **Document Version:** 1.3.2
 * **Target Application:** PDF Manipulation Tool Desktop Edition
 * **Target Operating System:** Microsoft Windows 10 / 11 (64-bit)
 * **Author / Ownership:** Thinh Phung / Avery Dennison (AD) RFID FRU Team
-* **Last Updated:** 2026-10-01
+* **Last Updated:** 2026-10-03
 
 ---
 
@@ -45,10 +45,10 @@ The **PDF Manipulation Desktop Application** is an enterprise-grade utility deve
 1. **Google Apps Script (GAS) Execution Limits:** The legacy cloud-scripted solution suffered from Google's strict 6-minute maximum execution timeout, Drive API rate limits, and slow web roundtrips when parsing multi-hundred-page PDFs.
 2. **High-Latency Network Storage (UNC / NAS):** Manufacturing environments host multi-gigabyte document trees across on-premise Windows Network Shares (`\\server\share`). Serial I/O over remote shares led to application freezing and memory exhaustion.
 3. **Automated Barcode Page-Range Isolation:** Production order bundles contain multiple Sales Orders (SO) and Sales Order Lines (SOL) concatenated within single files. The desktop tool provides automated 1D barcode boundary scanning with upside-down (180°) bottom-fallback detection to extract specific page subsets without human error.
-4. **Desktop Autonomy & BigQuery Integration:** Operates as a self-contained, high-performance Windows desktop application utilizing multi-core hardware threading, native PyMuPDF vector extraction, Microsoft Edge Chromium WebView2 rendering, and direct Google Cloud BigQuery Stored Procedure execution.
+4. **Desktop Autonomy & BigQuery Integration:** Operates as a self-contained, high-performance Windows desktop application utilizing multi-core hardware threading, native PyMuPDF vector extraction, Microsoft Edge Chromium WebView2 rendering, and direct Google Cloud BigQuery Stored Procedure execution (`raw_ingest.get_TE` and `raw_ingest.get_Job`).
 
 #### Primary Functional Modules:
-* **PDF Merger (PFL):** Automated multi-folder barcode matching, layout sorting, front-drawing prioritization, and an interactive 3-panel manual assembly workspace. Presets read single-column SOL lists (`A:A`). Layout folders support Google Drive and local UNC.
+* **PDF Merger (PFL):** Automated multi-folder barcode matching, layout sorting, front-drawing prioritization, and an interactive 3-panel manual assembly workspace. Presets read single-column or 2-column input (`SOL`, `Job`). Supports optional Customer Job Layout page detection with automatic BigQuery `raw_ingest.get_Job` query and SOL pattern fallback. Layout folders support Google Drive and local UNC.
 * **PDF Merger (RFID HT):** Dedicated module for the RFID Heat Transfer line. Presets read 4 columns (`SOL`, `Job`, `RB`, `Flag`). SOview scanning executes single-pass Barcode Range Scan for `Flag=True` items while maintaining Fast Mode / OCR Mode for `Flag=False`. Layout folder is local UNC, matched 1-to-1 by `Job` code, extracting all pages directly without barcode/OCR scanning.
 * **PDF Merger (PFL Thermal):** Specialized module for PFL Thermal production. Treats all SOLs uniformly under `Flag=True` (Barcode Range Scan mode), auto-disables the OCR toggle in the UI, and accurately isolates multi-page continuation runs.
 * **PDF Merger (RFID SB UQ):** Specialized workflow for Uniqlo RFID SB manufacturing lines. Automatically crawls network layout repositories via boundary-checked matching (`_find_pdfs_by_sol_boundary`) to avoid false-positive sub-string SOL collisions, preloads layout PDFs concurrently, and performs in-flight Cluster-Jump deduplication (`detect_unique_pages_dedup`) directly in memory.
@@ -70,7 +70,7 @@ The **PDF Manipulation Desktop Application** is an enterprise-grade utility deve
 | **Barcode Recognition** | `pyzbar` | **0.1.9** | C-library wrapper (libzbar-64) for decoding 1D linear barcodes (Code 128/39) with 2D exclusion |
 | **Optical Character Recognition** | `pytesseract` | **0.3.13** | Python wrapper for Google Tesseract OCR v5 engine (scanned PDF fallback) |
 | **Image Processing** | `Pillow` (PIL) | **12.3.0** | Pixel-level manipulation, color space conversion, and ROI image clipping |
-| **Google Cloud BigQuery** | `google-cloud-bigquery` | **3.45.1** | Invoking stored procedure `raw_ingest.get_TE` for Trim Adidas order intelligence |
+| **Google Cloud BigQuery** | `google-cloud-bigquery` | **3.45.1** | Invoking stored procedures `raw_ingest.get_TE` (Trim Adidas) and `raw_ingest.get_Job` (PFL) |
 | **Google Sheets API** | `gspread` | **6.2.1** | Reading user presets and SOL lists via Google Sheets v4 API |
 | **Google Drive API** | `google-api-python-client` | **2.198.0** | Recursive folder traversal and chunked stream download via Drive v3 API |
 | **Authentication** | `google-auth`, `google-auth-httplib2` | **2.56.3**, **0.4.1** | GCP Service Account JWT authentication and token lifecycle |
@@ -98,14 +98,17 @@ graph TD
         BOTTLE["bottle.Bottle WSGI Server (Routes: /, /temp/, assets)"]
         BRIDGE["backend/bridge.py (BridgeApi Class)"]
         TRACING["Function Execution Tracing & Profiling"]
+        WIN_UTILS["backend/window_utils.py (Taskbar Flash Notification)"]
     end
 
     subgraph Core_Backend_Engine ["Core Backend Engine (Python 3.14.6)"]
-        DETECTOR["backend/pdf_detector.py (1D Barcode, Digital Text, Scanned OCR)"]
+        CONSTANTS["backend/constants.py (Centralized Constants & Settings)"]
+        BQ_SERVICE["backend/bigquery_service.py (BigQuery get_TE & get_Job)"]
+        DETECTOR["backend/pdf_detector.py (1D Barcode, Digital Text, Layout Job/SOL Fallback)"]
         DEDUPE["backend/pdf_deduplicator.py (Cluster-Jump Binary Search)"]
         COMBINER["backend/pdf_combiner.py (Recursive Search & Parallel Pre-fetch)"]
         PROCESSOR["backend/pdf_processor.py (PyMuPDF fitz Slicing & Merging)"]
-        TRIM["backend/trim_service.py (BigQuery get_TE & SOview 3-Pattern)"]
+        TRIM["backend/trim_service.py (Trim Adidas SOview 3-Pattern & TE Barcodes)"]
         UPDATER["backend/updater.py (OTA Background Update Engine)"]
     end
 
@@ -116,16 +119,18 @@ graph TD
         TEMP_DISK["%TEMP%/pdfmerger_* & %TEMP%/pdf_merger_*"]
         LOCAL_UNC["Local File System / Windows UNC Network Shares"]
         GCP_CLOUD["Google Cloud Platform (Drive API v3, Sheets API v4)"]
-        GCP_BQ["Google BigQuery (raw_ingest.get_TE Procedure)"]
+        GCP_BQ["Google BigQuery (raw_ingest.get_TE & raw_ingest.get_Job)"]
     end
 
     UI_JS <-->|"window.pywebview.api (Promises)"| BRIDGE
     BRIDGE -->|"window.evaluate_js (Async Progress)"| UI_JS
     BOTTLE -->|"Static Assets & /temp/ Images"| UI_HTML
-    BRIDGE --> DETECTOR & DEDUPE & COMBINER & PROCESSOR & TRIM & UPDATER
+    BRIDGE --> DETECTOR & DEDUPE & COMBINER & PROCESSOR & TRIM & UPDATER & WIN_UTILS
+    BRIDGE --> SHEETS
     DETECTOR & DEDUPE & COMBINER & TRIM --> RESOLVER
-    TRIM --> GCP_BQ
-```    BRIDGE --> SHEETS
+    TRIM --> BQ_SERVICE
+    BRIDGE --> BQ_SERVICE
+    BQ_SERVICE --> GCP_BQ
     RESOLVER <--> GCP_CLOUD
     RESOLVER <--> LOCAL_UNC
     DETECTOR & PROCESSOR <--> RAM_CACHE
@@ -135,8 +140,8 @@ graph TD
 #### Layer Responsibilities:
 1. **Presentation Layer (`assets/`):** Runs inside an embedded WebView2 runtime. Renders 6 dedicated screens (`dashboard-screen`, `input-screen`, `workspace-screen`, `auto-detect-results-screen`, `deduplicate-screen`, `combine-screen`). Employs virtualized DOM rendering to render large page grids without memory bloat.
 2. **IPC & Web Server Layer (`main.py`, `backend/bridge.py`):** Exposes Python methods as asynchronous JavaScript Promises via `window.pywebview.api`. Dispatches background worker tasks (`threading.Thread`) so the UI never freezes. Concurrently hosts an in-memory `bottle` WSGI HTTP server on localhost to serve cached thumbnail JPEGs from `%TEMP%`.
-3. **Core Backend Engine (`backend/`):** Houses the multi-threaded algorithms for barcode detection (1D/2D), streaming PDF generators, OCR fallback workers, and vector-level PDF page concatenation using PyMuPDF.
-4. **Data Access & Cloud Integration:** Connects seamlessly to both on-premise Windows network shares (`\\server\share\...`) and Google Cloud APIs (Sheets v4, Drive v3) using authenticated Service Account credentials.
+3. **Core Backend Engine (`backend/`):** Houses the multi-threaded algorithms for barcode detection (1D/2D), streaming PDF generators, OCR fallback workers, vector-level PDF page concatenation using PyMuPDF, centralized constants (`backend/constants.py`), and BigQuery stored procedure integration (`backend/bigquery_service.py`).
+4. **Data Access & Cloud Integration:** Connects seamlessly to both on-premise Windows network shares (`\\server\share\...`) and Google Cloud APIs (Sheets v4, Drive v3, BigQuery) using authenticated Service Account credentials.
 
 ---
 
@@ -153,18 +158,22 @@ pdf_manipulation_desktop/
 │
 ├── backend/                            # Core Python Application Engine
 │   ├── __init__.py                     # Package initializer
-│   ├── bridge.py                       # BridgeApi: Public JS-Python API methods, thread dispatch, and execution tracing
+│   ├── constants.py                    # Centralized constants, regex patterns, BigQuery IDs, credentials path
+│   ├── bigquery_service.py             # Dedicated BigQuery service: get_TE (Trim Adidas) & get_Job (PFL)
+│   ├── bridge.py                       # BridgeApi: Public JS-Python API methods, thread dispatch, execution tracing
 │   ├── file_resolver.py                # Dual-mode PDF resolver: local UNC rglob search and Google Drive v3 API query
-│   ├── pdf_detector.py                 # Auto-detect engine: dual-mode SOview barcode (Fast/V2-OCR), digital text, Tesseract OCR scanning
+│   ├── pdf_detector.py                 # Auto-detect engine: dual-mode SOview barcode, digital text, OCR, layout Job/SOL fallback
 │   ├── pdf_deduplicator.py             # Deduplication engine: cluster-jump exponential + binary search algorithm
 │   ├── pdf_combiner.py                 # PDF combiner engine: recursive folder scanning and parallel UNC pre-fetching
 │   ├── pdf_processor.py                # Low-level PyMuPDF processor: thumbnail generation, hires rendering, export assembly
-│   ├── sheets_service.py               # Google Sheets API connector: batch ingestion of Presets and SOL lists
-│   └── updater.py                      # Over-The-Air (OTA) updater: checks remote version on Drive and launches detached updater
+│   ├── sheets_service.py               # Google Sheets API connector: batch ingestion of Presets, 1-col/2-col SOLs, 4-col RFID HT
+│   ├── trim_service.py                 # Trim Adidas specialized workflow: SOview 3-pattern scanning and TE barcode pairing
+│   ├── updater.py                      # Over-The-Air (OTA) updater: checks remote version on Drive and launches detached updater
+│   └── window_utils.py                 # Native Win32 API taskbar flash notifications via ctypes
 │
 ├── config/                             # Application Configuration
 │   ├── credentials.json                # GCP Service Account Private Key (Strictly restricted, git-ignored)
-│   └── version.json                    # Local semantic application version indicator (e.g. {"version": "1.0.7"})
+│   └── version.json                    # Local semantic application version indicator (e.g. {"version": "1.3.2"})
 │
 ├── assets/                             # Frontend Presentation Files (Embedded in WebView2)
 │   ├── index.html                      # Single-page HTML application structure hosting 6 modular screens
@@ -457,22 +466,30 @@ The output binary will be compiled to:
 
 ### 4.1 Constants & Global Configurations
 
+As of v1.3.2, core system constants, regular expressions, and service parameters are centralized in `backend/constants.py`:
+
 | Constant / Symbol | File Location | Value / Type | Description & Technical Significance |
 | :--- | :--- | :--- | :--- |
-| `SPREADSHEET_ID` | `backend/sheets_service.py:23` | `"1dUHAsSLSa1thA9Mmy-4_B2A9sXSqsILfRVOoz_s_gAk"` | Master Google Spreadsheet containing Presets and SOL lists across all manufacturing lines |
-| `USERS_SHEET_NAME` | `backend/sheets_service.py:24` | `"Users_Preset"` | Master directory tab containing 5 columns: `User`, `Line`, `SOview_Folder_Link`, `Layout_Folder_Link`, `Output_Folder_Link` |
-| `PFL_PRESET_RANGE` | `backend/sheets_service.py:143` | `'<Preset>'!A:A` | Batch read range for PFL line sheets; extracts single-column SOL code lists |
-| `RFID_HT_PRESET_RANGE` | `backend/sheets_service.py:141` | `'<Preset>'!A:D` | Batch read range for RFID HT line sheets; extracts 4 columns: `SOL`, `Job`, `RB`, `Flag` |
-| `validate_so_flags()` | `backend/pdf_detector.py:39` | `Callable` | Validates the "1 SO = 1 Flag" consistency rule; raises `ValueError` if contradictory flags exist for the same 9-digit base SO |
-| `_to_bool()` | `backend/sheets_service.py:62` | `Callable` | Safely converts Google Sheets cell strings to bool: returns `True` for `"true"`, `"1"`, `"yes"`; `False` for empty or other values |
-| `AUTO_DETECT_RAM_CACHE`| `backend/pdf_detector.py:93` | `dict[str, bytes]` | Global in-memory cache mapping `"{sol}_{typeId}"` to serialized PyMuPDF `fitz.Document` bytes for zero-disk Auto Detect export |
+| `SPREADSHEET_ID` | `backend/constants.py:20` | `"1dUHAsSLSa1thA9Mmy-4_B2A9sXSqsILfRVOoz_s_gAk"` | Master Google Spreadsheet containing Presets and SOL lists across all manufacturing lines |
+| `USERS_SHEET_NAME` | `backend/constants.py:21` | `"Users_Preset"` | Master directory tab containing 5 columns: `User`, `Line`, `SOview_Folder_Link`, `Layout_Folder_Link`, `Output_Folder_Link` |
+| `PFL_PRESET_RANGE` | `backend/constants.py:22` | `'<Preset>'!A:B` | Batch read range for PFL line sheets; extracts 2 columns: `SOL` and optional `Job` |
+| `RFID_HT_PRESET_RANGE` | `backend/constants.py:23` | `'<Preset>'!A:D` | Batch read range for RFID HT line sheets; extracts 4 columns: `SOL`, `Job`, `RB`, `Flag` |
+| `BIGQUERY_PROJECT` | `backend/constants.py:26` | `"navy-data-rfid-fru"` | Default GCP Project ID for BigQuery stored procedure execution |
+| `PROCEDURE_GET_TE` | `backend/constants.py:27` | `"raw_ingest.get_TE"` | Stored procedure for Trim Adidas Ticket Express retrieval |
+| `PROCEDURE_GET_JOB` | `backend/constants.py:28` | `"raw_ingest.get_Job"` | Stored procedure for PFL Customer Job number retrieval |
+| `JOB_CODE_REGEX` | `backend/constants.py:34` | `re.compile(r'\b\d{8}\b')` | Matches standard 8-digit Customer Job codes for PFL Layout page detection |
+| `SOL_REGEX` | `backend/constants.py:32` | `re.compile(r"^(\d{9})-(\d{1,3})$")` | Validates standard SOL strings (9-digit SO prefix + 1 to 3 digit line suffix) |
+| `SO_REGEX` | `backend/constants.py:33` | `re.compile(r"^\d{9}$")` | Validates standard 9-digit base Sales Order (SO) codes |
+| `get_credentials_path()` | `backend/constants.py:37` | `Callable[[], str]` | Resolves runtime path to `config/credentials.json` supporting frozen PyInstaller and dev mode |
+| `validate_so_flags()` | `backend/pdf_detector.py:40` | `Callable` | Validates the "1 SO = 1 Flag" consistency rule; raises `ValueError` if contradictory flags exist for the same 9-digit base SO |
+| `_to_bool()` | `backend/sheets_service.py:32` | `Callable` | Safely converts Google Sheets cell strings to bool: returns `True` for `"true"`, `"1"`, `"yes"`; `False` for empty or other values |
+| `AUTO_DETECT_RAM_CACHE`| `backend/pdf_detector.py:94` | `dict[str, bytes]` | Global in-memory cache mapping `"{sol}_{typeId}"` to serialized PyMuPDF `fitz.Document` bytes for zero-disk Auto Detect export |
 | `REMOTE_VERSION_FILE_ID` | `backend/updater.py:39` | `"1AKQM_kuyrvqeK6foCt_1O1tRJN2MZ6Vm"` | Google Drive File ID hosting the remote release `version.json` |
 | `REMOTE_EXE_FILE_ID` | `backend/updater.py:40` | `"1cMHbfZJNonLNssdNvJJoyazRBnxM6aOO"` | Google Drive File ID hosting the compiled update `.zip` bundle |
-| `_SOL_PATTERN` | `backend/file_resolver.py:70`<br>`backend/pdf_processor.py:35` | `re.compile(r"^(\d{9})-(\d{1,3})$")` | Validates standard SOL strings (9-digit SO prefix + 1 to 3 digit line suffix) |
 | `_ID_PATTERN` | `backend/pdf_deduplicator.py:63` | `re.compile(r'(?<!\d)(?<!\d )(?:\d{13}\|\d(?: \d){12})(?! ?\d)')` | Matches 13-digit continuous or single-space separated numeric IDs for docket deduplication |
-| `A4_W`, `A4_H`, `TOL` | `backend/pdf_detector.py:1087` | `595.28`, `841.89`, `1.0` | Standard A4 dimensions in PDF points ($72\text{ pt/inch}$) with $\pm 1.0\text{ pt}$ tolerance for layout file sorting |
-| `TRACING_ENABLED` | `backend/bridge.py:59` | `True` | Global switch for execution tracing and profiling |
-| `_MAX_ARG_LEN` | `backend/bridge.py:61` | `40` | Maximum character length for arguments printed in trace logs |
+| `A4_W`, `A4_H`, `TOL` | `backend/pdf_detector.py:1100` | `595.28`, `841.89`, `1.0` | Standard A4 dimensions in PDF points ($72\text{ pt/inch}$) with $\pm 1.0\text{ pt}$ tolerance for layout file sorting |
+| `TRACING_ENABLED` | `backend/bridge.py:60` | `False` (Prod) | Global switch for execution tracing and BigQuery terminal query logging |
+| `_MAX_ARG_LEN` | `backend/bridge.py:62` | `40` | Maximum character length for arguments printed in trace logs |
 
 ---
 
@@ -886,6 +903,41 @@ Introduced in v1.3.1 for the RFID SB workflow:
 
 ---
 
+#### 16. PFL Customer Job Layout Matching & BigQuery Integration (`backend/pdf_detector.py` & `backend/bigquery_service.py`)
+
+Introduced in v1.3.2 to enhance Packaging Front Layout (PFL) automation with Customer Job identification:
+
+1. **Two-Column Input Ingestion (`SOL`, `Job`):**
+   - The PFL module supports both 1-column (`SOL`) and 2-column (`SOL`, `Job`) inputs from Google Sheets (`A:B` range via `backend/sheets_service.py`) and manual textarea entry.
+   - When the user selects a preset or pastes multi-column data, `SOL` and `Job` are mapped into the execution state.
+
+2. **Automated BigQuery Stored Procedure Resolution (`raw_ingest.get_Job`):**
+   - If `job_flag=True` in PFL and any SOL is missing a Customer Job number, `BridgeApi.run_auto_detect()` invokes `fetch_bigquery_job()` from `backend/bigquery_service.py`.
+   - Constructs a structured query invoking `navy-data-rfid-fru.raw_ingest.get_Job`:
+     ```sql
+     CALL `navy-data-rfid-fru.raw_ingest.get_Job`([STRUCT(so AS so, line AS line), ...])
+     ```
+   - Automatically parses `job_code` (8 digits) and maps it to the respective SOL.
+   - If BigQuery returns empty records or encounters an error, a non-blocking confirmation modal (`#bigquery-error-modal`) alerts the operator with the list of unresolved SOLs, allowing them to proceed with fallback matching or cancel.
+
+3. **High-Speed Layout File Discovery by SO Prefix:**
+   - Candidate layout files in the layout directory (UNC or Google Drive) continue to be filtered by the 9-digit Sales Order prefix (`{so}_*`). This avoids scanning millions of unrelated files across network shares, keeping directory discovery instantaneous.
+
+4. **Dual-Strategy Layout Page Detection with Automatic Fallback:**
+   - Inside candidate layout PDF files, page text is inspected using vector text extraction:
+     - **Primary Tier (Customer Job Code):** Matches standard 8-digit Customer Job codes (`JOB_CODE_REGEX = re.compile(r'\b\d{8}\b')`).
+     - **Fallback Tier (SOL Pattern):** If the Job code is not found on any page or is missing, the engine automatically falls back to regex matching by SOL pattern (`\b{sol}\b`).
+   - If neither matches, the SOL is marked as missing layout pages.
+
+5. **Auto Detect Summary Modal Reporting:**
+   - The Auto Detect Summary modal explicitly annotates the matching method used per SOL:
+     - `Found by Job`: Matched via 8-digit Customer Job code.
+     - `Found by SOL Pattern Fallback`: Matched via fallback SOL pattern.
+   - The Layout Results review grid remains clean and uncluttered, preserving the standard operator workflow while providing full auditability in the final completion summary.
+   - All Job detection and BigQuery `get_Job` routines are strictly scoped to the PFL module, ensuring zero side-effects on RFID HT, Trim Adidas, PFL Thermal, RFID SB, or Deduplication modules.
+
+---
+
 ### 4.3 Comprehensive Logic-to-UI Mapping
 
 | User Interaction / Event | UI Component & Screen | BridgeApi Method | Threading Model | Backend Action & UI State Update |
@@ -896,7 +948,7 @@ Introduced in v1.3.1 for the RFID SB workflow:
 | Click "Fetch & Open" | `#btn-fetch`<br>`#input-screen` | `pre_fetch_all_pdfs(...)` | Background Thread (`_run_in_thread`) | Validates 1 SO = 1 Flag consistency (`validateRfidFlags`); resolves PDFs via `file_resolver`; pushes progress to `#prefetch-progress-modal`; navigates to `workspace-screen`. |
 | Select Preset Dropdown | `#preset-select`<br>`#input-screen` | *Pure UI State* | Main Thread | Populates folder inputs; renders Preset SOL preview grid: 2 columns for PFL (`#`, `SOL Code`); 5 columns for RFID HT (`#`, `SOL Code`, `Job`, `RB`, `Flag`). |
 | Click "Fetch & Open" | `#btn-fetch`<br>`#input-screen` | `pre_fetch_all_pdfs(...)` | Background Thread (`_run_in_thread`) | Validates 1 SO = 1 Flag consistency (`validateRfidFlags`); resolves PDFs via `file_resolver`; pushes progress to `#prefetch-progress-modal`; navigates to `workspace-screen`. |
-| Click "Run Auto Detect" | `#btn-auto-detect`<br>`#input-screen` | `run_auto_detect(...)` | Background Thread (`_run_in_thread`) | Validates 1 SO = 1 Flag consistency; executes Three-Mode barcode stream & layout extraction; populates `AUTO_DETECT_RAM_CACHE`; opens `auto-detect-results-screen`. |
+| Click "Run Auto Detect" | `#btn-auto-detect`<br>`#input-screen` | `run_auto_detect(...)` | Background Thread (`_run_in_thread`) | Validates 1 SO = 1 Flag consistency; if PFL with job_flag, queries BigQuery `get_Job`; executes Three-Mode barcode stream & layout extraction (Customer Job with SOL fallback); populates `AUTO_DETECT_RAM_CACHE`; opens `auto-detect-results-screen`. |
 | View Auto Detect Summary | `#ad-results-table`<br>`#auto-detect-results-screen` | *Pure UI State* | Main Thread | Renders summary grid with full text selection enabled (`user-select: text`) for direct copying of SOL codes and page counts; calculates total detected pages. |
 | Click Preview Button | `.ad-preview-btn`<br>`#auto-detect-results-screen` | `fetch_auto_detect_preview(...)`<br>`fetch_page_range(...)` (fallback) | Background Thread / Async UI | Zero-Network Instant Preview: directly renders page thumbnails from `AUTO_DETECT_RAM_CACHE` with zero network I/O; opens Continuous Vertical Viewer modal; enables zoom scaling ($40\%$ to $300\%$). |
 | Click "Export Auto Detect" | `#btn-export-auto`<br>`#auto-detect-results-screen`| `export_from_auto_detect(...)`| Background Thread (`_run_in_thread`) | Directly concatenates pre-extracted sub-documents from `AUTO_DETECT_RAM_CACHE` with zero disk reads; saves output PDFs to destination directory. |

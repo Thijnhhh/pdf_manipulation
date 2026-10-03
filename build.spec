@@ -67,10 +67,16 @@ a = Analysis(
         # packaging (used by updater.py for version comparison)
         'packaging.version',
         # Auto Detect & PDF processing
+        'backend.constants',
+        'backend.bigquery_service',
+        'backend.sheets_service',
+        'backend.file_resolver',
+        'backend.pdf_processor',
         'backend.pdf_detector',
         'backend.pdf_deduplicator',
         'backend.pdf_combiner',
         'backend.trim_service',
+        'backend.updater',
         'backend.window_utils',
         'pyzbar',
         'pyzbar.pyzbar',

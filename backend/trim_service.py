@@ -14,8 +14,21 @@ import sys
 import pymupdf as fitz
 
 
-BQ_PROJECT_ID = "avy-data-rfid-fru"
-BQ_PROCEDURE  = f"`{BQ_PROJECT_ID}.raw_ingest.get_TE`"
+from backend.constants import (
+    get_credentials_path,
+    BQ_PROJECT_ID,
+    BQ_PROC_GET_TE as BQ_PROCEDURE,
+    BQ_PROC_GET_JOB as BQ_JOB_PROCEDURE,
+)
+from backend.bigquery_service import (
+    fetch_bigquery_procedure,
+    fetch_bigquery_te,
+    fetch_bigquery_job,
+    validate_pfl_job_data,
+)
+
+# Backward-compatibility alias for credentials resolution
+_credentials_path = get_credentials_path
 
 EXACT_TE_HEADER = "Ticket Express Number"
 
@@ -25,53 +38,6 @@ _P2_REGEX = re.compile(
     re.MULTILINE,
 )
 _P3_REGEX = re.compile(r"Page\s+(\d{1,3})\s*of\s*(\d{1,3})")
-
-
-def _credentials_path() -> str:
-    if getattr(sys, "frozen", False):
-        base = sys._MEIPASS  # type: ignore[attr-defined]
-    else:
-        base = os.path.join(os.path.dirname(__file__), "..")
-    path = os.path.normpath(os.path.join(base, "config", "credentials.json"))
-    if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"credentials.json not found at: {path}\n"
-            "Place your Google Service Account key in the config/ folder."
-        )
-    return path
-
-
-# ── 1. BigQuery Fetch ─────────────────────────────────────────
-
-def fetch_bigquery_te(pairs: list) -> list:
-    """
-    Call BigQuery stored procedure get_TE with (so_int, line_int) pairs.
-    Returns list of dicts: [{SOL, ORDERED_ITEM, list_TE}, ...]
-    """
-    from google.cloud import bigquery
-    from google.oauth2 import service_account
-
-    if not pairs:
-        return []
-
-    creds = service_account.Credentials.from_service_account_file(_credentials_path())
-    client = bigquery.Client(credentials=creds, project=creds.project_id)
-
-    structs_sql = ",\n        ".join(
-        [f"STRUCT({so} AS so, {line} AS line)" for so, line in pairs]
-    )
-    call_sql = f"""
-    CALL {BQ_PROCEDURE}([
-        {structs_sql}
-    ]);
-    """
-
-    try:
-        query_job = client.query(call_sql)
-        results = query_job.result()
-        return [dict(row) for row in results]
-    finally:
-        client.close()
 
 
 # ── 2. Data Validation ────────────────────────────────────────

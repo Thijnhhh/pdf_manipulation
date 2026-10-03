@@ -3,6 +3,31 @@
 All notable changes to this project will be documented in this file.
 
 
+## [1.3.2] - 2026-10-03
+### Added
+- **PFL Customer Job Layout Matching & BigQuery Integration (`backend/pdf_detector.py`, `backend/bigquery_service.py`, `backend/bridge.py`):**
+  - **2-Column Sheet & Input Ingestion:** Enabled reading both `SOL` (Column A) and Customer `Job` code (Column B) in the PFL module via Google Sheets (`A:B`) or manual entry.
+  - **BigQuery Automatic Job Retrieval:** Integrated Google BigQuery stored procedure `raw_ingest.get_Job(filters ARRAY<STRUCT<so INT64, line INT64>>)` using Service Account credentials to automatically query missing 8-digit Customer Job numbers for PFL SOLs.
+  - **Dual-Strategy Layout Page Detection with Fallback:** When `job_flag` is enabled in PFL, candidate layout pages are first matched by 8-digit Customer Job number (`JOB_CODE_REGEX = re.compile(r'\b\d{8}\b')`). If no page matches the Job code, the engine automatically falls back to matching by SOL pattern (`\b{sol}\b`).
+  - **Auto Detect Summary Modal Reporting:** Added explicit detection status indicators in the PFL Auto Detect Summary modal (`Found by Job` vs. `Found by SOL Pattern Fallback`), clearly communicating the matching strategy used per SOL while keeping the layout results review grid intact.
+  - **SO Prefix Layout Discovery Optimization:** Preserved 9-digit SO prefix filtering (`{so}_*`) during directory scans to keep candidate layout file discovery instantaneous over local and network shares.
+- **Centralized Constants & Path Configuration (`backend/constants.py`):**
+  - Consolidated application-wide constants, regex definitions (`JOB_CODE_REGEX`, `SOL_REGEX`, `SO_REGEX`), GCP configuration (`BIGQUERY_PROJECT`, stored procedure names `PROCEDURE_GET_TE` and `PROCEDURE_GET_JOB`), and credentials resolution logic (`get_credentials_path()`) into a single source of truth.
+- **Dedicated BigQuery Service Module (`backend/bigquery_service.py`):**
+  - Created a modularized BigQuery client service with generic stored procedure execution (`fetch_bigquery_procedure`), dedicated procedure helpers (`fetch_bigquery_te`, `fetch_bigquery_job`), and validation logic (`validate_pfl_job_data`).
+
+### Changed
+- **Modular Backend Architecture:**
+  - Decoupled BigQuery procedures from `backend/trim_service.py`, leaving `trim_service.py` focused exclusively on Trim Adidas domain logic (SOview 3-pattern parsing and TE barcode matching) while re-exporting BigQuery utilities for backward compatibility.
+  - Updated `backend/sheets_service.py`, `backend/bridge.py`, and `backend/pdf_detector.py` to consume centralized constants and BigQuery services.
+- **Strict Module Isolation & Tracing Control:**
+  - Enforced strict scoping so that PFL Job flag logic, BigQuery Job querying, and layout fallback detection are active solely within the PFL module, preserving untouched behavior for RFID HT, Trim Adidas, PFL Thermal, RFID SB, and deduplication modules.
+  - Unified the `TRACING_ENABLED` configuration in `backend/bridge.py` to toggle BigQuery query result terminal logging for both Trim Adidas and PFL.
+- **PyInstaller Build Configuration (`build.spec`):**
+  - Updated `hiddenimports` to explicitly include all backend modules (`backend.constants`, `backend.bigquery_service`, `backend.sheets_service`, `backend.file_resolver`, `backend.pdf_processor`, `backend.pdf_detector`, `backend.pdf_deduplicator`, `backend.pdf_combiner`, `backend.trim_service`, `backend.updater`, `backend.window_utils`).
+- **Synchronized PE Metadata & Configurations:**
+  - Upgraded application version to `1.3.2` across `config/version.json`, `version_info.txt`, `assets/index.html`, `CHANGELOG.md`, and `Documents.md`.
+
 ## [1.3.1] - 2026-10-01
 ### Added
 - **Native Windows Taskbar Flash Notification (`backend/window_utils.py` & `bridge.py`):**

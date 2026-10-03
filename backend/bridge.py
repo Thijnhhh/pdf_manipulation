@@ -809,6 +809,40 @@ class BridgeApi:
                     p = _json_str(payload)
                     self._eval(f"window._onAutoDetectProgress({p})")
 
+                # ── PFL BigQuery job_flag resolution ─────────────────────────
+                is_pfl_line = str(line_str or "").strip().upper() == "PFL"
+                bq_warnings: list[str] = []
+                if is_pfl_line and not job_map:
+                    flagged_sols = [sol for sol in sol_list if sol_flags.get(sol)]
+                    if flagged_sols:
+                        try:
+                            from backend.file_resolver import parse_so
+                            from backend.bigquery_service import fetch_bigquery_job, validate_pfl_job_data
+                            pairs = []
+                            for sol in flagged_sols:
+                                so = parse_so(sol)
+                                if so and "-" in sol:
+                                    try:
+                                        pairs.append((int(so), int(sol.split("-", 1)[1])))
+                                    except ValueError:
+                                        pass
+
+                            progress_cb({"sol": "BigQuery", "typeId": "layout",
+                                         "method": "Calling get_Job…",
+                                         "fileName": "", "currentFile": 0, "totalFiles": 0})
+
+                            bq_records = fetch_bigquery_job(pairs, tracing_enabled=TRACING_ENABLED)
+                            job_map, bq_warnings = validate_pfl_job_data(bq_records, flagged_sols)
+
+                            if TRACING_ENABLED:
+                                print(f"[bridge] PFL job_map resolved: {job_map}")
+                                if bq_warnings:
+                                    print(f"[bridge] PFL bq_warnings: {bq_warnings}")
+
+                        except Exception as bq_exc:
+                            print(f"[bridge] PFL get_Job error: {bq_exc}")
+                            bq_warnings.append(f"Lỗi khi kết nối BigQuery: {bq_exc}")
+
                 result = run_auto_detect_all(
                     sol_list      = sol_list,
                     folder_inputs = folder_inputs,
@@ -828,7 +862,12 @@ class BridgeApi:
                     self._eval("window._onAutoDetectCancelled()")
                     return
 
-                payload = _json_str({"success": True, "tracing_enabled": TRACING_ENABLED, **result})
+                payload = _json_str({
+                    "success": True,
+                    "tracing_enabled": TRACING_ENABLED,
+                    "bq_warnings": bq_warnings if is_pfl_line else [],
+                    **result
+                })
                 self._eval(f"window._onAutoDetectDone({payload})")
                 self.flash_window()
 
@@ -878,8 +917,8 @@ class BridgeApi:
 
         def _task():
             try:
+                from backend.bigquery_service import fetch_bigquery_te
                 from backend.trim_service import (
-                    fetch_bigquery_te,
                     validate_data_bigquery,
                     scan_soview_pdf_3patterns,
                     scan_te_pdf_barcode,
@@ -933,7 +972,7 @@ class BridgeApi:
                 bq_records: list[dict] = []
                 bq_error: str = ""
                 try:
-                    bq_records = fetch_bigquery_te(pairs)
+                    bq_records = fetch_bigquery_te(pairs, tracing_enabled=TRACING_ENABLED)
                     tracer.record(
                         phase="1. BigQuery Fetch",
                         target="Stored Procedure get_TE",

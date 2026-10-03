@@ -35,6 +35,8 @@ import sys
 import threading
 import time
 
+from backend.constants import JOB_CODE_REGEX
+
 # ── Validate SO Flags ────────────────────────────────────────────────────────
 
 def validate_so_flags(sol_entries: list | dict) -> dict[str, bool]:
@@ -735,6 +737,18 @@ def _extract_sols_from_text(text: str) -> set:
     return found_sols
 
 
+_JOB_8_DIGIT_PATTERN = re.compile(JOB_CODE_REGEX)
+
+
+def _extract_jobs_from_text(text: str) -> set:
+    """
+    Extract all 8-digit job numbers present in text layer or OCR text.
+    """
+    if not text:
+        return set()
+    return set(_JOB_8_DIGIT_PATTERN.findall(text))
+
+
 def _detect_pages_all_sols(
     pdf_source,
     sol_list,
@@ -745,12 +759,20 @@ def _detect_pages_all_sols(
     progress_cb=None,
     ocr_flag: bool = False,
     sol_flags: dict = None,
+    line: str = "PFL",
+    type_id: str = "",
+    job_map: dict = None,
 ):
     if cancel_event is None:
         cancel_event = threading.Event()
+    if sol_flags is None:
+        sol_flags = {}
+    if job_map is None:
+        job_map = {}
 
     clean_sol_list = list(dict.fromkeys(s.strip() for s in sol_list if s and isinstance(s, str) and s.strip()))
     results = {sol: [] for sol in clean_sol_list}
+    page_details = {}  # (sol, page_num) -> {"match_by": "job"|"sol_fallback"|"sol"|"barcode", "job_code": str}
 
     sol_patterns = {sol: re.compile(rf"(?<!\d){re.escape(sol)}(?!\d)") for sol in clean_sol_list}
     
@@ -766,12 +788,24 @@ def _detect_pages_all_sols(
     # Define process_scanned_page once so both scanned branch and potential re-use can call it
     def process_scanned_page(i, img):
         if cancel_event and cancel_event.is_set():
-            return (i, [])
+            return (i, {})
         import pytesseract
         text = pytesseract.image_to_string(img, lang=ocr_lang)
         page_sols = _extract_sols_from_text(text)
-        found = [sol for sol in clean_sol_list if (sol in page_sols or sol_patterns[sol].search(text))]
-        return (i, found)
+        page_jobs = _extract_jobs_from_text(text) if (type_id == "layout" and line == "PFL" and job_map) else set()
+        found_matches = {}
+        for sol in clean_sol_list:
+            is_pfl_job_sol = (type_id == "layout" and line == "PFL" and sol_flags.get(sol))
+            if is_pfl_job_sol:
+                target_job = str(job_map.get(sol, "")).strip()
+                if target_job and target_job in page_jobs:
+                    found_matches[sol] = {"match_by": "job", "job_code": target_job}
+                elif sol in page_sols or sol_patterns[sol].search(text):
+                    found_matches[sol] = {"match_by": "sol_fallback", "job_code": target_job}
+            else:
+                if sol in page_sols or sol_patterns[sol].search(text):
+                    found_matches[sol] = {"match_by": "sol", "job_code": ""}
+        return (i, found_matches)
 
     for method in priority_chain:
         if cancel_event.is_set():
@@ -788,12 +822,15 @@ def _detect_pages_all_sols(
             if progress_cb:
                 progress_cb("barcode")
 
+            # SOview Barcode Detector: PFL SOview NEVER uses Mode 3 (Barcode Range Scan)
+            soview_sol_flags = {} if line == "PFL" else (sol_flags or {})
+
             page_map, bc_status = _detect_barcode_soview(
                 pdf_source   = pdf_source,
                 sol_list     = clean_sol_list,
                 cancel_event = cancel_event,
                 use_ocr      = ocr_flag,
-                sol_flags    = sol_flags or {},
+                sol_flags    = soview_sol_flags,
             )
 
             if bc_status == "barcode":
@@ -804,8 +841,9 @@ def _detect_pages_all_sols(
                         if p not in existing:
                             results[sol].append(p)
                             existing.add(p)
+                            page_details[(sol, p)] = {"match_by": "barcode", "job_code": ""}
                     results[sol].sort()
-                return results, "barcode"
+                return results, "barcode", page_details
 
         elif method == "digital":
             import pymupdf as fitz
@@ -830,14 +868,36 @@ def _detect_pages_all_sols(
                     had_any_text = True
                     
                 page_sols = _extract_sols_from_text(text)
+                page_jobs = _extract_jobs_from_text(text) if (type_id == "layout" and line == "PFL" and job_map) else set()
                 for sol in clean_sol_list:
-                    if page_num not in results[sol] and (sol in page_sols or sol_patterns[sol].search(text)):
+                    is_pfl_job_sol = (type_id == "layout" and line == "PFL" and sol_flags.get(sol))
+                    if is_pfl_job_sol:
+                        target_job = str(job_map.get(sol, "")).strip()
+                        if target_job and target_job in page_jobs:
+                            matched = True
+                            m_info = {"match_by": "job", "job_code": target_job}
+                        elif sol in page_sols or sol_patterns[sol].search(text):
+                            matched = True
+                            m_info = {"match_by": "sol_fallback", "job_code": target_job}
+                        else:
+                            matched = False
+                            m_info = None
+                    else:
+                        if sol in page_sols or sol_patterns[sol].search(text):
+                            matched = True
+                            m_info = {"match_by": "sol", "job_code": ""}
+                        else:
+                            matched = False
+                            m_info = None
+
+                    if matched and page_num not in results[sol]:
                         results[sol].append(page_num)
+                        page_details[(sol, page_num)] = m_info
                         
             _doc.close()
 
             if had_any_text:
-                return results, "digital"
+                return results, "digital", page_details
 
         elif method == "scanned":
             import pytesseract
@@ -856,17 +916,18 @@ def _detect_pages_all_sols(
                 futures = {executor.submit(process_scanned_page, i, img): i for i, img in enumerate(images, start=1)}
                 for future in concurrent.futures.as_completed(futures):
                     if cancel_event.is_set(): break
-                    i, found_sols = future.result()
-                    for sol in found_sols:
+                    i, found_matches = future.result()
+                    for sol, m_info in found_matches.items():
                         if i not in results[sol]:
                             results[sol].append(i)
+                            page_details[(sol, i)] = m_info
                             
             for sol in clean_sol_list:
                 results[sol].sort()
 
-            return results, "scanned"
+            return results, "scanned", page_details
 
-    return results, "none"
+    return results, "none", page_details
 
 
 # ── Precision Performance Tracer ─────────────────────────────────────────────
@@ -1119,7 +1180,7 @@ def run_auto_detect_all(
 
         t_search = time.perf_counter()
         try:
-            if type_id == "layout" and job_map:
+            if type_id == "layout" and line == "RFID HT" and job_map:
                 # RFID HT: Layout files in network folder are searched by Job number (8-digit prefix)
                 unique_jobs = list(dict.fromkeys(str(j).strip() for j in job_map.values() if str(j).strip()))
                 batched_files[type_id] = find_all_pdfs_batch(
@@ -1178,7 +1239,7 @@ def run_auto_detect_all(
 
         # ── Case A: RFID HT Layout Mode (job_map provided) ────────────────────
         # 1-to-1 SOL-to-Job mapping; extracts ALL pages directly from each job's layout file.
-        if type_id == "layout" and job_map:
+        if type_id == "layout" and line == "RFID HT" and job_map:
             layout_files_all = batched_files.get("layout", {})
             for sol in clean_sol_list:
                 job_code = str(job_map.get(sol, "")).strip()
@@ -1480,7 +1541,7 @@ def run_auto_detect_all(
 
             t_file = time.perf_counter()
             try:
-                page_map, method_used = _detect_pages_all_sols(
+                page_map, method_used, page_details = _detect_pages_all_sols(
                     pdf_source     = pdf_source,
                     sol_list       = all_sols,
                     priority_chain = chain,
@@ -1489,6 +1550,9 @@ def run_auto_detect_all(
                     progress_cb    = make_progress_cb(),
                     ocr_flag       = ocr_flag,
                     sol_flags      = sol_flags,
+                    line           = line,
+                    type_id        = type_id,
+                    job_map        = job_map,
                 )
                 # Merge pages into assembly — use local_idx for this SO
                 total_pages_matched = 0
@@ -1503,14 +1567,19 @@ def run_auto_detect_all(
                     seen = set((e["fileIdx"], e["pageIndex"]) for e in assembly[sol][type_id])
                     for p in pages:
                         if (local_idx, p) not in seen:
-                            assembly[sol][type_id].append({
+                            entry = {
                                 "pageIndex": p,
                                 "fileIdx":   local_idx,
                                 "fileName":  file_name,
                                 "filePath":  file_path,
                                 "fileId":    file_id,
                                 "method":    method_used,
-                            })
+                            }
+                            if line == "PFL":
+                                p_detail = page_details.get((sol, p), {})
+                                entry["matchBy"] = p_detail.get("match_by", "sol")
+                                entry["jobCode"] = p_detail.get("job_code", "")
+                            assembly[sol][type_id].append(entry)
                             seen.add((local_idx, p))
                     assembly[sol][type_id].sort(key=lambda e: (e["fileIdx"], e["pageIndex"]))
 
@@ -1645,7 +1714,7 @@ def run_auto_detect_all(
                 if not items:
                     continue
 
-                if type_id == "layout" and job_map and sol in job_map:
+                if type_id == "layout" and line == "RFID HT" and job_map and sol in job_map:
                     job_code = str(job_map[sol]).strip()
                     found_files = [
                         f for f in batched_files.get("layout", {}).get(job_code, [])

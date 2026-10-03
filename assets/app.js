@@ -654,6 +654,7 @@
     function renderPresetSolPreview() {
         if (!dom.presetSolPreview || !dom.presetSolTbody || !dom.presetSolCount) return;
         const isRfid = state.currentLine === 'RFID HT';
+        const isPfl = state.currentLine === 'PFL';
 
         // Update thead
         if (dom.presetSolThead) {
@@ -665,6 +666,14 @@
                         <th>Job</th>
                         <th>RB</th>
                         <th style="text-align:center;width:68px;">Flag</th>
+                    </tr>
+                `;
+            } else if (isPfl) {
+                dom.presetSolThead.innerHTML = `
+                    <tr>
+                        <th style="width:36px;text-align:center;">#</th>
+                        <th>SOL Code</th>
+                        <th style="text-align:center;width:88px;">Job Flag</th>
                     </tr>
                 `;
             } else {
@@ -695,6 +704,22 @@
                         </td>
                     </tr>
                 `).join('');
+        } else if (isPfl) {
+            const entries = state.pflEntries || [];
+            dom.presetSolCount.textContent = entries.length;
+            dom.presetSolTbody.innerHTML = entries.length === 0
+                ? `<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--text-secondary);font-style:italic;">No entries found</td></tr>`
+                : entries.map((e, i) => `
+                    <tr>
+                        <td style="text-align:center;">${i + 1}</td>
+                        <td class="sol-cell">${escHtml(typeof e === 'object' && e ? e.sol : e)}</td>
+                        <td style="text-align:center;">
+                            <span class="flag-badge ${(e && typeof e === 'object' && e.job_flag) ? 'flag-badge--true' : 'flag-badge--false'}">
+                                ${(e && typeof e === 'object' && e.job_flag) ? 'TRUE' : 'FALSE'}
+                            </span>
+                        </td>
+                    </tr>
+                `).join('');
         } else {
             const sols = state.solList;
             dom.presetSolCount.textContent = sols.length;
@@ -719,6 +744,7 @@
             if (dom.presetSolPreview) dom.presetSolPreview.classList.add('hidden');
             state.solList = [];
             state.rfidEntries = [];
+            state.pflEntries = [];
             hideError();
             renderSolList();
             return;
@@ -735,15 +761,24 @@
         dom.outputFolderInput.value = preset.outputFolder || '';
 
         const isRfid = state.currentLine === 'RFID HT';
+        const isPfl = state.currentLine === 'PFL';
         const rawPresetData = state.solMap[preset.name] || [];
 
         if (isRfid) {
             // rawPresetData is [{ sol, job, rb, flag }, ...]
             state.rfidEntries = Array.isArray(rawPresetData) ? rawPresetData : [];
+            state.pflEntries = [];
             state.solList = state.rfidEntries.map(e => String(e.sol || '').trim()).filter(s => s.length > 0);
             validateRfidFlags(state.rfidEntries);
+        } else if (isPfl) {
+            // rawPresetData is [{ sol, job_flag }, ...] or legacy string[]
+            state.rfidEntries = [];
+            state.pflEntries = Array.isArray(rawPresetData) ? rawPresetData : [];
+            state.solList = state.pflEntries.map(e => (typeof e === 'object' && e) ? String(e.sol || '').trim() : String(e).trim()).filter(s => s.length > 0);
+            hideError();
         } else {
             state.rfidEntries = [];
+            state.pflEntries = [];
             state.solList = Array.from(new Set(rawPresetData.map(s => String(s).trim()).filter(s => s.length > 0)));
             hideError();
         }
@@ -2039,6 +2074,16 @@
             solList.forEach(sol => { flagsMap[sol] = true; });
             flagsJson = JSON.stringify(flagsMap);
             jobMapJson = "{}";
+        } else if (state.currentLine === 'PFL') {
+            // PFL: pass job_flag per SOL
+            const flagsMap = {};
+            (state.pflEntries || []).forEach(e => {
+                if (e && typeof e === 'object' && e.sol) {
+                    flagsMap[e.sol] = Boolean(e.job_flag);
+                }
+            });
+            flagsJson = JSON.stringify(flagsMap);
+            jobMapJson = "{}";
         }
 
         window._adStartTime = new Date();
@@ -2052,7 +2097,7 @@
             Boolean(adState.ocrEnabled),
             flagsJson,
             jobMapJson,
-            state.currentLine
+            state.currentLine || 'PFL'
         );
     }
 
@@ -2358,8 +2403,24 @@
         // ── End RFID SB branch ────────────────────────────────────
 
         // Standard PFL / RFID HT / PFL Thermal results display
+        const isPfl = state.currentLine === 'PFL';
         let foundCount = 0;
         grid.innerHTML = '';
+
+        if (isPfl && result.bq_warnings && result.bq_warnings.length > 0) {
+            const warnBanner = document.createElement('div');
+            warnBanner.style.cssText = 'background:rgba(255,180,0,0.12);border:1px solid var(--accent-warning,#f59e0b);border-radius:6px;padding:10px 14px;margin-bottom:12px;width:100%;grid-column:1/-1;';
+            warnBanner.innerHTML = `
+                <div style="font-weight:700;color:var(--accent-warning,#f59e0b);margin-bottom:4px;">⚠️ Cảnh báo số Job (BigQuery)</div>
+                <div style="font-size:0.82rem;line-height:1.4;">
+                    ${result.bq_warnings.map(w => `<div>• ${escHtml(w)}</div>`).join('')}
+                </div>
+            `;
+            grid.appendChild(warnBanner);
+        }
+
+        let jobMatchPages = 0;
+        let fallbackMatchPages = 0;
 
         Object.keys(result.assembly || {}).forEach(sol => {
             let solFound = false;
@@ -2376,13 +2437,43 @@
 
                     const typeLabel = pdfTypes.find(t => t.id === typeId)?.label || typeId;
 
-                    card.innerHTML = `
-                        <div style="font-weight:bold;font-family:monospace;margin-bottom:6px;font-size:0.95rem;">${sol}</div>
-                        <div style="color:var(--text-secondary);font-size:0.8rem;margin-bottom:3px;">Type: <span style="color:var(--text-primary);font-weight:500;">${typeLabel}</span></div>
-                        <div style="color:var(--text-secondary);font-size:0.8rem;margin-bottom:3px;">Method: <span style="color:var(--text-primary);font-weight:500;">${p.method || 'unknown'}</span></div>
-                        <div style="color:var(--text-secondary);font-size:0.8rem;margin-bottom:3px;">Page: <span style="color:var(--text-primary);font-weight:500;">${p.pageIndex}</span></div>
-                        <div style="color:var(--text-secondary);font-size:0.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${p.fileName}">File: ${p.fileName}</div>
-                    `;
+                    if (isPfl) {
+                        if (p.matchBy === 'job') {
+                            jobMatchPages++;
+                        } else if (p.matchBy === 'sol_fallback') {
+                            fallbackMatchPages++;
+                        }
+
+                        let matchBadge = '';
+                        if (p.matchBy === 'job') {
+                            const jobDisplay = p.jobCode ? `Số Job (${p.jobCode})` : 'Số Job';
+                            matchBadge = `<span style="background:rgba(16,185,129,0.15);color:var(--accent-success,#10b981);font-weight:600;padding:2px 6px;border-radius:4px;font-size:0.75rem;">🎯 ${escHtml(jobDisplay)}</span>`;
+                        } else if (p.matchBy === 'sol_fallback') {
+                            matchBadge = `<span style="background:rgba(245,158,11,0.15);color:var(--accent-warning,#f59e0b);font-weight:600;padding:2px 6px;border-radius:4px;font-size:0.75rem;">🔄 SOL pattern (Fallback)</span>`;
+                        } else {
+                            matchBadge = `<span style="color:var(--text-primary);font-weight:500;">${escHtml(p.method || 'digital')} (SOL pattern)</span>`;
+                        }
+
+                        card.innerHTML = `
+                            <div style="font-weight:bold;font-family:monospace;margin-bottom:6px;font-size:0.95rem;">${escHtml(sol)}</div>
+                            <div style="color:var(--text-secondary);font-size:0.8rem;margin-bottom:3px;">Type: <span style="color:var(--text-primary);font-weight:500;">${typeLabel}</span></div>
+                            <div style="color:var(--text-secondary);font-size:0.8rem;margin-bottom:3px;display:flex;align-items:center;gap:6px;">
+                                <span>Nguồn:</span> ${matchBadge}
+                            </div>
+                            <div style="color:var(--text-secondary);font-size:0.8rem;margin-bottom:3px;">Page: <span style="color:var(--text-primary);font-weight:500;">${p.pageIndex}</span></div>
+                            <div style="color:var(--text-secondary);font-size:0.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${escHtml(p.fileName)}">File: ${escHtml(p.fileName)}</div>
+                        `;
+                    } else {
+                        // Original unmodified display for all other modules
+                        card.innerHTML = `
+                            <div style="font-weight:bold;font-family:monospace;margin-bottom:6px;font-size:0.95rem;">${escHtml(sol)}</div>
+                            <div style="color:var(--text-secondary);font-size:0.8rem;margin-bottom:3px;">Type: <span style="color:var(--text-primary);font-weight:500;">${typeLabel}</span></div>
+                            <div style="color:var(--text-secondary);font-size:0.8rem;margin-bottom:3px;">Method: <span style="color:var(--text-primary);font-weight:500;">${escHtml(p.method || 'unknown')}</span></div>
+                            <div style="color:var(--text-secondary);font-size:0.8rem;margin-bottom:3px;">Page: <span style="color:var(--text-primary);font-weight:500;">${p.pageIndex}</span></div>
+                            <div style="color:var(--text-secondary);font-size:0.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${escHtml(p.fileName)}">File: ${escHtml(p.fileName)}</div>
+                        `;
+                    }
+
                     grid.appendChild(card);
                 });
             });
@@ -2390,7 +2481,20 @@
         });
 
         const totalSols = Object.keys(result.assembly || {}).length;
-        summaryText.innerHTML = `Detection complete. Found pages for <strong>${foundCount} / ${totalSols}</strong> SOLs.`;
+        let statsBannerHtml = '';
+        if (isPfl && (jobMatchPages > 0 || fallbackMatchPages > 0)) {
+            statsBannerHtml = `
+                <div style="margin-top:8px;display:flex;gap:10px;font-size:0.82rem;flex-wrap:wrap;">
+                    <span style="background:rgba(16,185,129,0.12);border:1px solid rgba(16,185,129,0.3);color:var(--accent-success,#10b981);padding:4px 10px;border-radius:4px;font-weight:600;">
+                        🎯 Tìm thấy theo <strong>Số Job</strong>: <b>${jobMatchPages}</b> trang
+                    </span>
+                    <span style="background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);color:var(--accent-warning,#f59e0b);padding:4px 10px;border-radius:4px;font-weight:600;">
+                        🔄 Fallback theo <strong>SOL pattern</strong>: <b>${fallbackMatchPages}</b> trang
+                    </span>
+                </div>
+            `;
+        }
+        summaryText.innerHTML = `Detection complete. Found pages for <strong>${foundCount} / ${totalSols}</strong> SOLs.${statsBannerHtml}`;
 
         if (result.errors && result.errors.length > 0) {
             const errMsgs = result.errors.map(e => `${e.sol} (${e.typeId}): ${e.error}`).join('; ');
