@@ -349,7 +349,7 @@
         const titles = {
             'PFL': 'PDF Merger (PFL)',
             'RFID HT': 'PDF Merger (RFID HT)',
-            'Trim': 'Trim Adidas',
+            'Trim': 'PDF Merger (Trim)',
             'PFL THERMAL': 'PDF Merger (PFL Thermal)',
             'RFID SB': 'PDF Merger (RFID SB UQ)',
         };
@@ -398,7 +398,7 @@
             });
         }
 
-        // ── Fetch button visibility (Trim Adidas & RFID SB hide it) ───────
+        // ── Fetch button visibility (PDF Merger (Trim) & RFID SB hide it) ───────
         if (dom.btnFetch) {
             dom.btnFetch.style.display = (isTrim || isRfidSb) ? 'none' : '';
         }
@@ -1908,7 +1908,7 @@
     function openAutoDetectModal() {
         const isTrim = state.currentLine === 'Trim';
 
-        // Trim Adidas: skip the config modal entirely — call backend directly
+        // PDF Merger (Trim): skip the config modal entirely — call backend directly
         if (isTrim) {
             _startTrimAutoDetect();
             return;
@@ -1937,7 +1937,7 @@
         dom.adModal.classList.add('active');
     }
 
-    // Trim Adidas: directly launch backend pipeline (no config modal)
+    // PDF Merger (Trim): directly launch backend pipeline (no config modal)
     function _startTrimAutoDetect() {
         const solList = state.inputMode === 'manual'
             ? parseManualSolCodes()
@@ -2160,7 +2160,7 @@
         // Store globally so the apply button can access it
         window._adFinalResult = result;
 
-        // ── Trim Adidas: rich BQ summary ─────────────────────────
+        // ── PDF Merger (Trim): rich BQ summary ─────────────────────────
         if (state.currentLine === 'Trim') {
             const bqMeta = result.bq_metadata || {};
             const missingD = result.missing_data || {};
@@ -2239,7 +2239,7 @@
                 const m = bqMeta[s] || {};
                 return (m.soview_pages || 0) + (m.te_pages || 0) > 0;
             }).length;
-            summaryText.innerHTML = `Trim Adidas detection complete. Found pages for <strong>${foundCount} / ${solList.length}</strong> SOLs.`;
+            summaryText.innerHTML = `PDF Merger (Trim) detection complete. Found pages for <strong>${foundCount} / ${solList.length}</strong> SOLs.`;
 
             if (result.errors && result.errors.length > 0) {
                 const errMsgs = result.errors.map(e => `${e.sol} (${e.typeId}): ${e.error}`).join('; ');
@@ -2257,7 +2257,7 @@
             });
             return;
         }
-        // ── End Trim Adidas branch ────────────────────────────────
+        // ── End PDF Merger (Trim) branch ────────────────────────────────
 
         // ── RFID SB: dedicated rich summary table ─────────────────
         if (state.currentLine === 'RFID SB') {

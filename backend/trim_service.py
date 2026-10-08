@@ -1,7 +1,7 @@
 """
 backend/trim_service.py
 ─────────────────────────────────────────────────────────────
-Dedicated processing engine for the "Trim Adidas" module.
+Dedicated processing engine for the "PDF Merger (Trim)" module.
 ─────────────────────────────────────────────────────────────
 """
 
@@ -162,6 +162,48 @@ def parse_space_delimited_row(row: str) -> list:
     return [m[0] for m in matches]
 
 
+def parse_kem_packing_list_row(row: str) -> list:
+    """
+    Extract 10-digit TE codes for pattern 'KEM PACKING LIST CHI TIET'.
+    Data format: PO#|TR|TE ~ QTY
+    Rules:
+      - Column TR: last 7 digits
+      - Column TE: first 3 digits
+      - Concatenated into 10-digit TE
+    """
+    if not row or not row.strip():
+        return []
+    if EXACT_TE_HEADER in row:
+        return []
+    if "TE" not in row or "KEM PACKING LIST CHI TIET" not in row:
+        return []
+
+    matches = re.findall(r"\|([^|~]+)\|([^|~]+)~", row)
+    tes = []
+    for tr_raw, te_raw in matches:
+        tr_clean = tr_raw.strip()
+        te_clean = te_raw.strip()
+
+        if tr_clean.upper() == "TR" and te_clean.upper() == "TE":
+            continue
+
+        tr_digits = re.sub(r"\D", "", tr_clean)
+        te_digits = re.sub(r"\D", "", te_clean)
+
+        if len(tr_digits) >= 7 and len(te_digits) >= 3:
+            tr_part = tr_digits[-7:]
+            te_part = te_digits[:3]
+            te_10 = tr_part + te_part
+            if len(te_10) == 10:
+                tes.append(te_10)
+
+    return tes
+
+
+# Backward-compatibility alias
+extract_te_from_kem_packing_list = parse_kem_packing_list_row
+
+
 def extract_ticket_express_numbers(row: str) -> str:
     """
     Top-level dispatcher: extract all 10-digit TE codes from a raw text row.
@@ -169,6 +211,12 @@ def extract_ticket_express_numbers(row: str) -> str:
     """
     if not row or not row.strip():
         return ""
+
+    # Pattern: KEM PACKING LIST CHI TIET (PO#|TR|TE ~ QTY)
+    if "KEM PACKING LIST CHI TIET" in row and "TE" in row and EXACT_TE_HEADER not in row:
+        tes = parse_kem_packing_list_row(row)
+        return ", ".join(tes) if tes else ""
+
     if EXACT_TE_HEADER not in row:
         return ""
     if ";" not in row and ":" not in row:

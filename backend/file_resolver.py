@@ -214,7 +214,7 @@ def find_all_pdfs_local_batch(
     over high-latency SMB network shares while preventing blocking single-threaded traversal.
     If match_prefix_8 is True, matches filename's first 8 characters exactly with the job code.
     If sort_by_mtime_desc is True, results for each code are sorted by file modification time
-    (newest first) — used by Trim Adidas TE folder scanning.
+    (newest first) — used by PDF Merger (Trim) TE folder scanning.
     Otherwise (default), results are sorted alphabetically by filename.
     Returns: { so_code: [ {found, file_id, path, name}, ... ] }
     """

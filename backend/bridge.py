@@ -60,7 +60,7 @@ from backend.window_utils import flash_app_window
 
 # ── Bridge Tracing ───────────────────────────────────────────
 # Set to False to silence all trace output after manual testing.
-TRACING_ENABLED = False   
+TRACING_ENABLED = True   
 
 _MAX_ARG_LEN = 40  # max chars per argument value in trace output
 
@@ -888,7 +888,7 @@ class BridgeApi:
         """Signal the running Auto Detect to stop after its current page."""
         self._auto_detect_cancel.set()
 
-    # ── 5b. Trim Adidas Auto Detect ──────────────────────────
+    # ── 5b. PDF Merger (Trim) Auto Detect ──────────────────────────
 
     @_trace
     def run_auto_detect_trim(
@@ -898,7 +898,7 @@ class BridgeApi:
         output_path:        str,
     ) -> None:
         """
-        Async: Trim Adidas detection pipeline.
+        Async: PDF Merger (Trim) detection pipeline.
 
         Stages:
           1. BigQuery CALL get_TE → ORDERED_ITEM + list_TE per SOL.
@@ -945,7 +945,7 @@ class BridgeApi:
 
                 tracer = AutoDetectTracer(
                     enabled=TRACING_ENABLED,
-                    title="Trim Adidas Auto Detect Performance Breakdown",
+                    title="PDF Merger (Trim) Auto Detect Performance Breakdown",
                     prefix="TRIM",
                 )
 

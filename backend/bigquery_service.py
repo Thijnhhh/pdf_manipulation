@@ -4,7 +4,7 @@ backend/bigquery_service.py
 Dedicated service for executing and validating Google BigQuery
 stored procedure calls:
   • fetch_bigquery_procedure: generic procedure caller for filters ARRAY<STRUCT<so INT64, line INT64>>
-  • fetch_bigquery_te: executes get_TE (Trim Adidas)
+  • fetch_bigquery_te: executes get_TE (PDF Merger (Trim))
   • fetch_bigquery_job: executes get_Job (PFL)
   • validate_pfl_job_data: validates customer_job 8-digit codes and generates warning messages
 ─────────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ from backend.constants import (
 def fetch_bigquery_procedure(procedure_name: str, pairs: list, tracing_enabled: bool = False) -> list:
     """
     Generic execution of stored procedures expecting filters ARRAY<STRUCT<so INT64, line INT64>>.
-    Shared by Trim Adidas (get_TE) and PFL (get_Job).
+    Shared by PDF Merger (Trim) (get_TE) and PFL (get_Job).
     """
     if not pairs:
         return []

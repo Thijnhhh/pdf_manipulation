@@ -2,7 +2,7 @@
 backend/constants.py
 ─────────────────────────────────────────────────────────────
 Centralized configuration, credentials resolution, and constants
-for all modules (PFL, RFID HT, Trim Adidas, PFL Thermal, RFID SB).
+for all modules (PFL, RFID HT, PDF Merger (Trim), PFL Thermal, RFID SB).
 ─────────────────────────────────────────────────────────────
 """
 
