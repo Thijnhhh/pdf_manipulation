@@ -512,11 +512,6 @@
             tab.addEventListener('click', () => onInputModeTabSwitch(tab.dataset.mode))
         );
 
-        // Auto Detect stub
-        dom.btnAutoDetect.addEventListener('click', () => {
-            showToast('OCR Auto Detect is coming soon 🚀', 'info');
-        });
-
         // Search
         dom.solSearchInput.addEventListener('input', () => renderSolList());
 
@@ -870,12 +865,6 @@
         if (dom.preFetchModal) dom.preFetchModal.classList.remove('active');
         switchToWorkspace();
     };
-
-    function setFetchLoading(on) {
-        dom.btnFetch.disabled = on;
-        dom.fetchSpinner.classList.toggle('active', on);
-        dom.fetchLabel.textContent = on ? 'Loading…' : 'Fetch PDFs';
-    }
 
     function switchToWorkspace() {
         // Reset per-session state
@@ -2868,10 +2857,6 @@
     window.addEventListener('pywebviewready', () => {
         init();
         cacheAdDom();
-        // Remove old stub listener — replaced by bindAutoDetectEvents below
-        // (btnAutoDetect was bound in bindEvents() as a stub, we re-bind here)
-        dom.btnAutoDetect.replaceWith(dom.btnAutoDetect.cloneNode(true));
-        dom.btnAutoDetect = document.getElementById('btn-auto-detect');
         bindAutoDetectEvents();
     });
 
@@ -2879,8 +2864,6 @@
     if (window.pywebview) {
         init();
         cacheAdDom();
-        dom.btnAutoDetect.replaceWith(dom.btnAutoDetect.cloneNode(true));
-        dom.btnAutoDetect = document.getElementById('btn-auto-detect');
         bindAutoDetectEvents();
     }
 

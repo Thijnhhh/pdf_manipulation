@@ -1116,6 +1116,7 @@ def run_auto_detect_all(
     job_map: dict = None,
     trace_enabled: bool = False,
     line: str = "PFL",
+    bq_resolver=None,
 ):
     """
     Main entry point called from bridge.py in a background thread.
@@ -1160,13 +1161,13 @@ def run_auto_detect_all(
         if sol not in so_to_sols.setdefault(so, []):
             so_to_sols[so].append(sol)
 
-    # ── Step 2: Pre-fetch all files using Batch Search ────────────────────────
+    # ── Step 2: Parallel Batch Search & I/O Preload (Async I/O Orchestrator) ──
     unique_sos = list(so_to_sols.keys())
     batched_files: dict = {}
 
-    for type_id in pdf_type_ids:
+    def _fetch_type_worker(type_id: str):
         if cancel_event.is_set():
-            break
+            return type_id, {}, None, 0.0, ""
 
         if progress_cb:
             progress_cb({
@@ -1180,57 +1181,110 @@ def run_auto_detect_all(
 
         t_search = time.perf_counter()
         try:
+            folder_input = folder_inputs.get(type_id, "")
+            is_drive = is_drive_map.get(type_id, False)
+
             if type_id == "layout" and line == "RFID HT" and job_map:
                 # RFID HT: Layout files in network folder are searched by Job number (8-digit prefix)
                 unique_jobs = list(dict.fromkeys(str(j).strip() for j in job_map.values() if str(j).strip()))
-                batched_files[type_id] = find_all_pdfs_batch(
-                    folder_inputs[type_id],
+                files_res = find_all_pdfs_batch(
+                    folder_input,
                     unique_jobs,
-                    is_drive_map.get(type_id, False),
-                    match_prefix_8=True
+                    is_drive,
+                    match_prefix_8=True,
                 )
                 search_desc = f"{len(unique_jobs)} unique Jobs"
             elif type_id == "layout" and line == "RFID SB":
                 # RFID SB: layout files searched by full SOL with boundary check
-                batched_files[type_id] = _find_pdfs_by_sol_boundary(
-                    folder_inputs[type_id],
+                files_res = _find_pdfs_by_sol_boundary(
+                    folder_input,
                     clean_sol_list,
-                    is_drive_map.get(type_id, False)
+                    is_drive,
                 )
                 search_desc = f"{len(clean_sol_list)} SOLs (boundary match)"
             else:
-                batched_files[type_id] = find_all_pdfs_batch(
-                    folder_inputs[type_id],
+                files_res = find_all_pdfs_batch(
+                    folder_input,
                     unique_sos,
-                    is_drive_map.get(type_id, False)
+                    is_drive,
                 )
                 search_desc = f"{len(unique_sos)} unique SOs"
 
-            found_cnt = sum(len([f for f in flist if f.get("found")]) for flist in batched_files[type_id].values())
-            loc_label = "Drive" if is_drive_map.get(type_id, False) else "UNC/Local"
+            # Preload network files concurrently for SMB shares (e.g. SOview) so they
+            # arrive in RAM while other branches (e.g. Drive layout) are downloading.
+            if type_id == "soview" and not is_drive and not cancel_event.is_set():
+                unique_net_files = []
+                for so, flist in files_res.items():
+                    for f in flist:
+                        fpath = f.get("path")
+                        if f.get("found") and fpath and not f.get("bytes") and is_network_path(fpath):
+                            if not any(uf["path"] == fpath for uf in unique_net_files):
+                                unique_net_files.append(f)
+
+                if unique_net_files:
+                    sorted_net = sorted(
+                        unique_net_files,
+                        key=lambda fe: os.path.getsize(fe["path"]) if os.path.isfile(fe["path"]) else 0,
+                    )
+                    workers = min(12, len(sorted_net))
+
+                    def _preload_fe(fe):
+                        if cancel_event.is_set():
+                            return
+                        try:
+                            fe["bytes"] = read_pdf_bytes_smart(fe["path"])
+                        except Exception:
+                            pass
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pre_ex:
+                        list(pre_ex.map(_preload_fe, sorted_net))
+
+            found_cnt = sum(len([f for f in flist if f.get("found")]) for flist in files_res.values())
+            loc_label = "Drive" if is_drive else "UNC/Local"
             target_label = "layout (RFID SB Boundary)" if (type_id == "layout" and line == "RFID SB") else f"{type_id} ({loc_label})"
             tracer.record(
                 phase="1. Batch Search",
                 target=target_label,
                 t0=t_search,
-                details=f"{search_desc}, {found_cnt} files found"
+                details=f"{search_desc}, {found_cnt} files found",
             )
+            return type_id, files_res, None, t_search, search_desc
+
         except Exception as exc:
-            for sol in clean_sol_list:
-                errors.append({"sol": sol, "typeId": type_id, "error": str(exc)})
-            batched_files[type_id] = {}
-            tracer.record(
-                phase="1. Batch Search",
-                target=f"{type_id} (ERROR)",
-                t0=t_search,
-                details=str(exc)
-            )
+            return type_id, {}, exc, t_search, str(exc)
+
+    max_search_workers = max(1, min(len(pdf_type_ids), 4))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_search_workers) as search_executor:
+        future_to_tid = {search_executor.submit(_fetch_type_worker, tid): tid for tid in pdf_type_ids}
+        for future in concurrent.futures.as_completed(future_to_tid):
+            tid, files_res, exc, t_s, s_desc = future.result()
+            if exc:
+                for sol in clean_sol_list:
+                    errors.append({"sol": sol, "typeId": tid, "error": str(exc)})
+                batched_files[tid] = {}
+                tracer.record(
+                    phase="1. Batch Search",
+                    target=f"{tid} (ERROR)",
+                    t0=t_s,
+                    details=s_desc,
+                )
+            else:
+                batched_files[tid] = files_res
 
     # ── Step 3: Initialise assembly type-slots ────────────────────────────────
     for so, sols_for_so in so_to_sols.items():
         for type_id in pdf_type_ids:
             for sol in sols_for_so:
                 assembly[sol][type_id] = []
+
+    # Sync parallel BigQuery resolution if running in background
+    if bq_resolver:
+        try:
+            resolved_jobs, _ = bq_resolver()
+            if resolved_jobs and isinstance(resolved_jobs, dict):
+                job_map.update(resolved_jobs)
+        except Exception as bq_err:
+            print(f"[detector] Error resolving parallel BigQuery: {bq_err}")
 
     # ── Step 4: Detection Loop per PDF Type ───────────────────────────────────
     for type_id in pdf_type_ids:

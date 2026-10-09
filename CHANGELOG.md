@@ -3,6 +3,35 @@
 All notable changes to this project will be documented in this file.
 
 
+## [1.3.3] - 2026-10-09
+### Added
+- **Parallel Multi-Branch Batch Search (`backend/pdf_detector.py`):**
+  - Refactored Step 2 (Batch Search) in `run_auto_detect_all` into a concurrent multi-threaded orchestrator using `concurrent.futures.ThreadPoolExecutor` (up to 4 workers).
+  - Searches and resolves file candidate maps across multiple PDF types (`soview`, `layout`, etc.) simultaneously instead of sequentially, drastically reducing discovery latency across multiple drives and folders.
+- **Concurrent Network Preload for SMB Shares (`backend/pdf_detector.py`):**
+  - Integrated asynchronous I/O preloading for network UNC paths (e.g. `soview` shares): preloads discovered PDF bytes into memory using up to 12 parallel threads while concurrent branches (such as Google Drive layout downloads) are actively downloading.
+  - Sorts candidate files by size (`os.path.getsize`) to optimize transfer concurrency and pipeline flow.
+- **Parallelized BigQuery Stored Procedure Resolution (`backend/bridge.py` & `backend/pdf_detector.py`):**
+  - **PFL Module:** Spawns a background worker thread (`_bg_bq`) to execute BigQuery `get_Job` query and validation in parallel with file discovery, synchronizing via `bq_resolver` before page detection begins.
+  - **Trim Adidas Module:** Executes Stage 1 (BigQuery `get_TE` stored procedure query) and Stage 3 (SOview batch file search) concurrently using a background daemon thread, eliminating the wait time previously spent searching local/SMB directories after querying BigQuery.
+- **Dynamic Upward Ancestor Hierarchy Cache for Google Drive (`backend/file_resolver.py`):**
+  - Replaced the exhaustive, upfront global folder tree scan (`_safe_list("mimeType = 'application/vnd.google-apps.folder'")` traversing 1,000+ folders) with a thread-safe, on-demand upward ancestor traversal (`folder_ancestor_cache` guarded by `threading.Lock`).
+  - Resolves folder lineage lazily from matched file parents upward to the target `folder_id`, completely avoiding multi-page API queries and memory overhead for large Google Drive trees.
+- **High-Performance Parallel Google Drive Downloads (`backend/file_resolver.py`):**
+  - Re-architected Google Drive file downloading to utilize persistent `requests.Session` with authorization headers, connection reuse, and increased concurrency to 10 worker threads (`ThreadPoolExecutor`).
+  - Added automatic retry logic (up to 3 attempts with 0.3s backoff).
+  - Directly streams PDF content into memory cache (`_RESOLVED_FILES_CACHE`) and writes to session temporary files.
+
+### Changed
+- **Centralized Credentials Resolution & Cleanups (`backend/updater.py`, `backend/sheets_service.py`, `backend/trim_service.py`):**
+  - Standardized `backend/updater.py` to use `get_credentials_path()` from `backend.constants`, removing duplicate `_credentials_path()` helper.
+  - Removed redundant backward-compatibility aliases in `backend/sheets_service.py` and `backend/trim_service.py`.
+- **Frontend Event Binding & Cleanup (`assets/app.js`):**
+  - Removed outdated OCR Auto Detect placeholder stub and dead helper `setFetchLoading`.
+  - Cleaned up duplicate DOM clone/replacement logic (`dom.btnAutoDetect.replaceWith(...)`) during `pywebviewready` lifecycle initialization.
+- **Synchronized PE Metadata & Configurations:**
+  - Upgraded application version to `1.3.3` across `config/version.json`, `version_info.txt`, `assets/index.html`, `CHANGELOG.md`, and `Documents.md`.
+
 ## [1.3.2] - 2026-10-03
 ### Added
 - **PFL Customer Job Layout Matching & BigQuery Integration (`backend/pdf_detector.py`, `backend/bigquery_service.py`, `backend/bridge.py`):**

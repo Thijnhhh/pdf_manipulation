@@ -37,8 +37,11 @@ import sys
 
 # Google API — only imported when Drive mode is needed
 from googleapiclient.discovery import build  # type: ignore
-from googleapiclient.http import MediaIoBaseDownload  # type: ignore
 from google.oauth2.service_account import Credentials
+from google.auth.transport.requests import Request
+import requests
+
+from backend.constants import get_credentials_path
 
 import atexit
 import queue
@@ -48,11 +51,6 @@ import time
 import uuid
 
 SESSION_TEMP_DIR: str = tempfile.mkdtemp(prefix="pdf_merger_")
-
-
-def get_session_temp_dir() -> str:
-    """Return the shared session temp directory path."""
-    return SESSION_TEMP_DIR
 
 
 def _cleanup_session_temp():
@@ -126,22 +124,9 @@ def parse_so(sol_code: str) -> "str | None":
 
 # ── Helpers ─────────────────────────────────────────────────
 
-def _credentials_path() -> str:
-    if getattr(sys, "frozen", False):
-        base = sys._MEIPASS  # type: ignore[attr-defined]
-    else:
-        base = os.path.join(os.path.dirname(__file__), "..")
-    return os.path.normpath(os.path.join(base, "config", "credentials.json"))
-
-
-import httplib2
-import google_auth_httplib2
-
 def _drive_service():
-    creds = Credentials.from_service_account_file(_credentials_path(), scopes=SCOPES)
-    # Create fresh HTTP transport per service instance with timeout to avoid WinError 10054 socket re-use crashes
-    http_transport = google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=30))
-    return build("drive", "v3", http=http_transport, cache_discovery=False)
+    creds = Credentials.from_service_account_file(get_credentials_path(), scopes=SCOPES)
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
 _thread_local = threading.local()
@@ -154,37 +139,49 @@ def _get_thread_drive_service():
     return _thread_local.service
 
 
-# In-memory cache for Drive folder parents tree: (timestamp, folder_parents_dict)
-_GLOBAL_FOLDER_PARENTS_CACHE: tuple[float, dict[str, list[str]]] | None = None
-_FOLDER_CACHE_TTL = 600.0  # 10 minutes cache TTL
+_token_lock = threading.Lock()
+_cached_drive_token: tuple[float, str] | None = None  # (expiry_timestamp, token_str)
 
+
+def _get_drive_token() -> str:
+    """Return a valid Bearer token for Google Drive API with automatic refresh."""
+    global _cached_drive_token
+    now = time.time()
+    with _token_lock:
+        if _cached_drive_token and _cached_drive_token[0] > now + 60:
+            return _cached_drive_token[1]
+        creds = Credentials.from_service_account_file(get_credentials_path(), scopes=SCOPES)
+        creds.refresh(Request())
+        expiry = creds.expiry.timestamp() if creds.expiry else now + 3500
+        _cached_drive_token = (expiry, creds.token)
+        return creds.token
 
 
 def _download_single_file(file_id: str) -> str:
-    """Download a single Drive file to SESSION_TEMP_DIR in a thread-safe manner."""
-    thread_service = _get_thread_drive_service()
-    temp_path = os.path.join(SESSION_TEMP_DIR, f"{uuid.uuid4().hex}.pdf")
+    """Download a single Drive file to SESSION_TEMP_DIR with direct HTTP stream."""
+    cached = _RESOLVED_FILES_CACHE.get(file_id)
+    if cached and cached.get("path") and os.path.exists(cached["path"]):
+        return cached["path"]
+
+    temp_path = os.path.join(SESSION_TEMP_DIR, f"{file_id}.pdf")
+    token = _get_drive_token()
+    url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true"
+    headers = {"Authorization": f"Bearer {token}"}
+
     for attempt in range(1, 4):
         try:
-            request = thread_service.files().get_media(fileId=file_id)
-            buf = io.BytesIO()
-            downloader = MediaIoBaseDownload(buf, request, chunksize=5 * 1024 * 1024)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
-            buf.seek(0)
-            with open(temp_path, "wb") as f:
-                f.write(buf.read())
-            return temp_path
+            resp = requests.get(url, headers=headers, timeout=45)
+            if resp.status_code == 200:
+                with open(temp_path, "wb") as f:
+                    f.write(resp.content)
+                if file_id in _RESOLVED_FILES_CACHE:
+                    _RESOLVED_FILES_CACHE[file_id]["path"] = temp_path
+                    _RESOLVED_FILES_CACHE[file_id]["bytes"] = resp.content
+                return temp_path
         except Exception:
             if attempt == 3:
                 return ""
             time.sleep(0.3 * attempt)
-            try:
-                _thread_local.service = _drive_service()
-                thread_service = _thread_local.service
-            except Exception:
-                pass
     return ""
 
 
@@ -322,11 +319,10 @@ def find_all_pdfs_local_batch(
 
 def find_all_pdfs_drive_batch(folder_url: str, so_codes: list, match_prefix_8: bool = False) -> dict:
     """
-    Global Search + In-Memory Tree + Concurrent Download for Google Drive.
-    Returns: { so_code: [ {found, file_id, path, name, url}, ... ] }
+    Search Drive folder hierarchy and download matching PDFs with high-throughput connection pool.
+    Caches downloaded bytes directly in RAM (_RESOLVED_FILES_CACHE[fid]['bytes']) and writes to temp disk.
+    Returns: { so_code: [ {found, file_id, path, name, bytes, url}, ... ] }
     """
-    global _GLOBAL_FOLDER_PARENTS_CACHE
-
     clean_so_codes = list(dict.fromkeys(so.strip() for so in so_codes if so and isinstance(so, str) and so.strip()))
     results = {so: [] for so in clean_so_codes}
 
@@ -359,41 +355,42 @@ def find_all_pdfs_drive_batch(folder_url: str, so_codes: list, match_prefix_8: b
                 except Exception:
                     pass
 
-    # 1. Build In-Memory Tree of all folders (reverted to original global scan with RAM cache)
-    now = time.time()
-    folder_parents = {}
-    if _GLOBAL_FOLDER_PARENTS_CACHE and (now - _GLOBAL_FOLDER_PARENTS_CACHE[0] < _FOLDER_CACHE_TTL):
-        folder_parents = _GLOBAL_FOLDER_PARENTS_CACHE[1]
-    else:
-        page_token = None
-        while True:
-            resp = _safe_list("mimeType = 'application/vnd.google-apps.folder' and trashed = false", page_token)
-            if not resp:
-                break
-            for item in resp.get("files", []):
-                folder_parents[item.get("id")] = item.get("parents", [])
-            page_token = resp.get("nextPageToken")
-            if not page_token:
-                break
-        _GLOBAL_FOLDER_PARENTS_CACHE = (now, folder_parents)
+    # Dynamic upward folder ancestor cache to avoid scanning 1000+ folders in advance
+    folder_ancestor_cache: dict[str, str | None] = {}
+    folder_cache_lock = threading.Lock()
 
-    def is_in_target(file_parents):
+    def is_in_target(file_parents: list[str]) -> bool:
         if not file_parents:
             return False
-        visited = set()
-        queue = list(file_parents)
-        while queue:
-            curr = queue.pop(0)
-            if curr == folder_id:
-                return True
-            if curr in visited:
-                continue
-            visited.add(curr)
-            if curr in folder_parents:
-                queue.extend(folder_parents[curr])
+        if folder_id in file_parents:
+            return True
+        for p in file_parents:
+            curr = p
+            visited = set()
+            while curr:
+                if curr == folder_id:
+                    return True
+                with folder_cache_lock:
+                    cached_parent = folder_ancestor_cache.get(curr)
+                if cached_parent is not None:
+                    curr = cached_parent
+                    continue
+                if curr in visited:
+                    break
+                visited.add(curr)
+                try:
+                    f = service.files().get(fileId=curr, fields="parents", supportsAllDrives=True).execute()
+                    parents = f.get("parents", [])
+                    parent_of_curr = parents[0] if parents else None
+                    with folder_cache_lock:
+                        folder_ancestor_cache[curr] = parent_of_curr
+                    curr = parent_of_curr
+                except Exception:
+                    with folder_cache_lock:
+                        folder_ancestor_cache[curr] = None
+                    break
         return False
 
-    # 2. Chunk SO codes and query Drive (original query format)
     def chunker(seq, size):
         return (seq[pos:pos + size] for pos in range(0, len(seq), size))
 
@@ -411,7 +408,7 @@ def find_all_pdfs_drive_batch(folder_url: str, so_codes: list, match_prefix_8: b
                 break
 
             for item in resp.get("files", []):
-                file_id = item["id"]
+                fid = item["id"]
                 file_name = item.get("name", "")
                 parents = item.get("parents", [])
 
@@ -427,47 +424,80 @@ def find_all_pdfs_drive_batch(folder_url: str, so_codes: list, match_prefix_8: b
                                 matched_sos.append(original_so)
 
                     if matched_sos:
-                        if file_id not in matched_files:
-                            matched_files[file_id] = {
-                                "file_id": file_id,
+                        if fid not in matched_files:
+                            matched_files[fid] = {
+                                "file_id": fid,
                                 "name": file_name,
                                 "matched_sos": set(matched_sos)
                             }
                         else:
-                            matched_files[file_id]["matched_sos"].update(matched_sos)
+                            matched_files[fid]["matched_sos"].update(matched_sos)
 
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
 
-    # 3. Concurrent downloads of missing files (keep multi-threaded parallel downloads)
-    files_to_download = []
-    for fid in matched_files:
+    # High-performance parallel download with requests.Session (10 workers)
+    files_to_download_items = []
+    for fid, finfo in matched_files.items():
         cached = _RESOLVED_FILES_CACHE.get(fid)
-        if not cached or not cached.get("path") or not os.path.exists(cached.get("path")):
-            files_to_download.append(fid)
+        if not (cached and cached.get("bytes") and cached.get("path") and os.path.exists(cached["path"])):
+            files_to_download_items.append(finfo)
 
-    if files_to_download:
-        max_workers = min(len(files_to_download), 6)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_id = {executor.submit(_download_single_file, fid): fid for fid in files_to_download}
-            for future in concurrent.futures.as_completed(future_to_id):
-                fid = future_to_id[future]
+    if files_to_download_items:
+        token = _get_drive_token()
+        sess = requests.Session()
+        sess.headers.update({"Authorization": f"Bearer {token}"})
+
+        def _dl_worker(info_item):
+            fid = info_item["file_id"]
+            fname = info_item["name"]
+            url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media&supportsAllDrives=true"
+            temp_path = os.path.join(SESSION_TEMP_DIR, f"{fid}.pdf")
+            for attempt in range(1, 4):
                 try:
-                    temp_path = future.result()
+                    resp = sess.get(url, timeout=60)
+                    if resp.status_code == 200:
+                        b = resp.content
+                        with open(temp_path, "wb") as fp:
+                            fp.write(b)
+                        entry = {
+                            "found": True,
+                            "file_id": fid,
+                            "path": temp_path,
+                            "name": fname,
+                            "bytes": b,
+                            "url": f"https://drive.google.com/file/d/{fid}/view",
+                        }
+                        return fid, entry
                 except Exception:
-                    temp_path = ""
-                fname = matched_files[fid]["name"]
-                drive_url = f"https://drive.google.com/file/d/{fid}/view"
-                _RESOLVED_FILES_CACHE[fid] = {
-                    "found": bool(temp_path),
-                    "file_id": fid,
-                    "path": temp_path,
-                    "name": fname,
-                    "url": drive_url
-                }
+                    if attempt == 3:
+                        return fid, {
+                            "found": False,
+                            "file_id": fid,
+                            "path": "",
+                            "name": fname,
+                            "bytes": b"",
+                            "url": f"https://drive.google.com/file/d/{fid}/view",
+                        }
+                    time.sleep(0.3 * attempt)
+            return fid, {
+                "found": False,
+                "file_id": fid,
+                "path": "",
+                "name": fname,
+                "bytes": b"",
+                "url": f"https://drive.google.com/file/d/{fid}/view",
+            }
 
-    # 4. Populate results map for each SO code
+        max_workers = min(len(files_to_download_items), 10)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            fut_map = {executor.submit(_dl_worker, item): item["file_id"] for item in files_to_download_items}
+            for fut in concurrent.futures.as_completed(fut_map):
+                fid, entry = fut.result()
+                _RESOLVED_FILES_CACHE[fid] = entry
+
+    # Populate results map for each SO code
     for fid, info in matched_files.items():
         pdf_item = _RESOLVED_FILES_CACHE.get(fid)
         if not pdf_item:

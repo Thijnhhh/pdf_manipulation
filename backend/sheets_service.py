@@ -25,9 +25,6 @@ from backend.constants import (
     SHEETS_SCOPES as SCOPES,
 )
 
-# Backward-compatibility alias
-_credentials_path = get_credentials_path
-
 _CLIENT_CACHE = None
 
 def _get_client() -> gspread.Client:

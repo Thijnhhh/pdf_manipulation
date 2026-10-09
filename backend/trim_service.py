@@ -27,9 +27,6 @@ from backend.bigquery_service import (
     validate_pfl_job_data,
 )
 
-# Backward-compatibility alias for credentials resolution
-_credentials_path = get_credentials_path
-
 EXACT_TE_HEADER = "Ticket Express Number"
 
 _P1_REGEX = re.compile(r"\*\d{9}\*")

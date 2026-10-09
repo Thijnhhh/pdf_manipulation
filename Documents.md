@@ -3,11 +3,11 @@
 ---
 
 ## Document Information
-* **Document Version:** 1.3.2
+* **Document Version:** 1.3.3
 * **Target Application:** PDF Manipulation Tool Desktop Edition
 * **Target Operating System:** Microsoft Windows 10 / 11 (64-bit)
 * **Author / Ownership:** Thinh Phung / Avery Dennison (AD) RFID FRU Team
-* **Last Updated:** 2026-10-03
+* **Last Updated:** 2026-10-09
 
 ---
 
@@ -173,7 +173,7 @@ pdf_manipulation_desktop/
 │
 ├── config/                             # Application Configuration
 │   ├── credentials.json                # GCP Service Account Private Key (Strictly restricted, git-ignored)
-│   └── version.json                    # Local semantic application version indicator (e.g. {"version": "1.3.2"})
+│   └── version.json                    # Local semantic application version indicator (e.g. {"version": "1.3.3"})
 │
 ├── assets/                             # Frontend Presentation Files (Embedded in WebView2)
 │   ├── index.html                      # Single-page HTML application structure hosting 6 modular screens
@@ -935,6 +935,38 @@ Introduced in v1.3.2 to enhance Packaging Front Layout (PFL) automation with Cus
      - `Found by SOL Pattern Fallback`: Matched via fallback SOL pattern.
    - The Layout Results review grid remains clean and uncluttered, preserving the standard operator workflow while providing full auditability in the final completion summary.
    - All Job detection and BigQuery `get_Job` routines are strictly scoped to the PFL module, ensuring zero side-effects on RFID HT, Trim Adidas, PFL Thermal, RFID SB, or Deduplication modules.
+
+---
+
+#### 17. Parallel Multi-Branch Batch Search & Async I/O Orchestrator (`backend/pdf_detector.py`, `backend/bridge.py`, `backend/file_resolver.py`)
+
+Introduced in v1.3.3 to accelerate file discovery and eliminate serial latency across heterogeneous storage systems (Google Drive API, SMB Windows Network Shares, and BigQuery):
+
+1. **Parallel Multi-Branch Batch Search Engine (`_fetch_type_worker`):**
+   - Step 2 (Pre-fetch all files using Batch Search) in `run_auto_detect_all` previously executed sequentially across each entry in `pdf_type_ids` (e.g. `soview`, `layout`).
+   - Refactored into a concurrent multi-worker executor using `concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(len(pdf_type_ids), 4)))`.
+   - Each target type runs independently in its own thread, dispatching Drive API queries and local/UNC directory scans in parallel, cutting batch search latency by up to 50–70%.
+
+2. **Concurrent SMB Network Preload Pipeline:**
+   - In heterogeneous pipelines (e.g. `soview` on UNC network share `\\server\share` and `layout` on Google Drive), reading network files sequentially used to stall page detection while waiting for Drive downloads.
+   - For `soview` UNC/local paths, `_fetch_type_worker` identifies found files not yet in RAM and concurrently pre-fetches their raw binary content (`read_pdf_bytes_smart`) into `fe["bytes"]` using up to 12 threads (`workers = min(12, len(sorted_net))`).
+   - Candidate files are pre-sorted ascending by byte size (`os.path.getsize`) to maximize pipeline saturation.
+   - Network files arrive in RAM in advance while Drive layouts are being downloaded, eliminating SMB I/O wait times during subsequent detection loops.
+
+3. **Background Asynchronous BigQuery Resolution:**
+   - **PFL Workflow (`bridge.py`):** BigQuery Customer Job retrieval (`fetch_bigquery_job` calling `raw_ingest.get_Job`) is dispatched to a background daemon thread (`bq_thread`) immediately when auto-detect starts. It executes concurrently with Step 2 Batch Search. The detection loop joins `bq_resolver()` right before Step 4 (Detection Loop), preventing BigQuery API latency from blocking directory scans.
+   - **Trim Adidas Workflow (`auto_detect_trim_pdfs`):** BigQuery Stage 1 (`fetch_bigquery_data` calling `raw_ingest.get_TE`) and Stage 3 SOview batch file discovery (`find_all_pdfs_local_batch`) execute simultaneously via `_bg_soview_search`. The wait time previously spent scanning large SOview directories after querying BigQuery is completely eliminated.
+
+4. **Dynamic Upward Ancestor Hierarchy Resolution for Google Drive (`backend/file_resolver.py`):**
+   - Previously, Google Drive searches ran an exhaustive upfront folder query (`mimeType = 'application/vnd.google-apps.folder'`), scanning 1,000+ folders into memory on each run.
+   - Replaced by a thread-safe, on-demand upward ancestor crawler (`folder_ancestor_cache` guarded by `threading.Lock`).
+   - When candidate files matching SO/Job codes are discovered, their parent folders are crawled upwards toward `folder_id` with memoization. Large unreferenced directory trees are never queried, saving dozens of Drive API round-trips.
+
+5. **High-Throughput Parallel Google Drive Downloader:**
+   - Google Drive downloads now utilize a persistent HTTP session (`requests.Session`) with reusable connection pools and Bearer token headers.
+   - Concurrency is expanded to 10 parallel download workers (`ThreadPoolExecutor(max_workers=10)`).
+   - Integrated retry logic (up to 3 attempts with 0.3s linear backoff) to handle transient network hiccups gracefully.
+   - Streamed bytes are saved directly to session temp files and populated into `_RESOLVED_FILES_CACHE`.
 
 ---
 

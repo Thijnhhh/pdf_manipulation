@@ -38,18 +38,12 @@ import io
 REMOTE_VERSION_FILE_ID = "1AKQM_kuyrvqeK6foCt_1O1tRJN2MZ6Vm"
 REMOTE_EXE_FILE_ID     = "1cMHbfZJNonLNssdNvJJoyazRBnxM6aOO"
 
+from backend.constants import get_credentials_path
+
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
 
 # ── Helpers ─────────────────────────────────────────────────
-
-def _credentials_path() -> str:
-    if getattr(sys, "frozen", False):
-        base = sys._MEIPASS  # type: ignore[attr-defined]
-    else:
-        base = os.path.join(os.path.dirname(__file__), "..")
-    return os.path.normpath(os.path.join(base, "config", "credentials.json"))
-
 
 def _version_json_path() -> str:
     if getattr(sys, "frozen", False):
@@ -67,7 +61,7 @@ def _exe_dir() -> str:
 
 
 def _drive_service():
-    creds = Credentials.from_service_account_file(_credentials_path(), scopes=SCOPES)
+    creds = Credentials.from_service_account_file(get_credentials_path(), scopes=SCOPES)
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 

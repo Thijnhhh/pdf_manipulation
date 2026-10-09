@@ -809,39 +809,46 @@ class BridgeApi:
                     p = _json_str(payload)
                     self._eval(f"window._onAutoDetectProgress({p})")
 
-                # ── PFL BigQuery job_flag resolution ─────────────────────────
+                # ── PFL BigQuery job_flag resolution (Parallelized) ─────────
                 is_pfl_line = str(line_str or "").strip().upper() == "PFL"
                 bq_warnings: list[str] = []
+                bq_thread = None
+                bq_shared = {"job_map": {}, "warnings": []}
+
                 if is_pfl_line and not job_map:
                     flagged_sols = [sol for sol in sol_list if sol_flags.get(sol)]
                     if flagged_sols:
-                        try:
-                            from backend.file_resolver import parse_so
-                            from backend.bigquery_service import fetch_bigquery_job, validate_pfl_job_data
-                            pairs = []
-                            for sol in flagged_sols:
-                                so = parse_so(sol)
-                                if so and "-" in sol:
-                                    try:
-                                        pairs.append((int(so), int(sol.split("-", 1)[1])))
-                                    except ValueError:
-                                        pass
+                        def _bg_bq():
+                            try:
+                                from backend.file_resolver import parse_so
+                                from backend.bigquery_service import fetch_bigquery_job, validate_pfl_job_data
+                                pairs = []
+                                for sol in flagged_sols:
+                                    so = parse_so(sol)
+                                    if so and "-" in sol:
+                                        try:
+                                            pairs.append((int(so), int(sol.split("-", 1)[1])))
+                                        except ValueError:
+                                            pass
 
-                            progress_cb({"sol": "BigQuery", "typeId": "layout",
-                                         "method": "Calling get_Job…",
-                                         "fileName": "", "currentFile": 0, "totalFiles": 0})
+                                if pairs:
+                                    bq_records = fetch_bigquery_job(pairs, tracing_enabled=TRACING_ENABLED)
+                                    jmap, warns = validate_pfl_job_data(bq_records, flagged_sols)
+                                    bq_shared["job_map"] = jmap
+                                    bq_shared["warnings"] = warns
+                                    if TRACING_ENABLED:
+                                        print(f"[bridge] Parallel PFL job_map resolved: {jmap}")
+                            except Exception as bq_exc:
+                                print(f"[bridge] PFL get_Job error: {bq_exc}")
+                                bq_shared["warnings"].append(f"Lỗi khi kết nối BigQuery: {bq_exc}")
 
-                            bq_records = fetch_bigquery_job(pairs, tracing_enabled=TRACING_ENABLED)
-                            job_map, bq_warnings = validate_pfl_job_data(bq_records, flagged_sols)
+                        bq_thread = threading.Thread(target=_bg_bq, daemon=True)
+                        bq_thread.start()
 
-                            if TRACING_ENABLED:
-                                print(f"[bridge] PFL job_map resolved: {job_map}")
-                                if bq_warnings:
-                                    print(f"[bridge] PFL bq_warnings: {bq_warnings}")
-
-                        except Exception as bq_exc:
-                            print(f"[bridge] PFL get_Job error: {bq_exc}")
-                            bq_warnings.append(f"Lỗi khi kết nối BigQuery: {bq_exc}")
+                def _resolve_bq():
+                    if bq_thread:
+                        bq_thread.join()
+                    return bq_shared["job_map"], bq_shared["warnings"]
 
                 result = run_auto_detect_all(
                     sol_list      = sol_list,
@@ -856,7 +863,11 @@ class BridgeApi:
                     job_map       = job_map,
                     trace_enabled = TRACING_ENABLED,
                     line          = line_str,
+                    bq_resolver   = _resolve_bq if bq_thread else None,
                 )
+
+                if bq_shared["warnings"]:
+                    bq_warnings.extend(bq_shared["warnings"])
 
                 if self._auto_detect_cancel.is_set():
                     self._eval("window._onAutoDetectCancelled()")
@@ -897,22 +908,7 @@ class BridgeApi:
         folder_inputs_json: str,
         output_path:        str,
     ) -> None:
-        """
-        Async: PDF Merger (Trim) detection pipeline.
-
-        Stages:
-          1. BigQuery CALL get_TE → ORDERED_ITEM + list_TE per SOL.
-          2. Validate BQ data → report missing_ordered_item / missing_te.
-          3. Scan SOview folder (all SOLs, even missing BQ) using 3-pattern fitz.
-          4. Scan TE folder (only SOLs with valid BQ data) using barcode text scan;
-             files sorted newest-first by mtime.
-          5. Write sub-docs to AUTO_DETECT_RAM_CACHE.
-          6. Push _onAutoDetectDone with { success, assembly, errors,
-                                           bq_metadata, missing_data }.
-
-        folder_inputs_json: JSON { "soview": "<path>", "layout": "<path>" }
-          (frontend uses "layout" key for the TE folder to reuse existing UI).
-        """
+        """Run PDF Merger (Trim) detection pipeline."""
         self._auto_detect_cancel.clear()
 
         def _task():
@@ -957,7 +953,24 @@ class BridgeApi:
                            "method": "Fetching BigQuery data…",
                            "fileName": "", "currentFile": 0, "totalFiles": 0})
 
-                # ── Stage 1: BigQuery ────────────────────────────────────
+                # ── Stage 1: BigQuery & Stage 3: SOview batch file find (Parallel) ──
+                unique_sos: list[str] = list(dict.fromkeys(
+                    parse_so(sol) for sol in sol_list if parse_so(sol)
+                ))
+
+                soview_files: dict = {}
+                t_sv_search = time.perf_counter()
+
+                def _bg_soview_search():
+                    nonlocal soview_files
+                    if soview_folder:
+                        soview_files = find_all_pdfs_local_batch(
+                            soview_folder, unique_sos, sort_by_mtime_desc=False
+                        )
+
+                soview_thread = threading.Thread(target=_bg_soview_search, daemon=True)
+                soview_thread.start()
+
                 pairs: list[tuple[int, int]] = []
                 for sol in sol_list:
                     so = parse_so(sol)
@@ -999,21 +1012,8 @@ class BridgeApi:
                     details=f"{len(sol_metadata)} valid, {len(missing_data.get('missing_ordered_item', []))} missing OI, {len(missing_data.get('missing_te', []))} missing TE",
                 )
 
-                # ── Stage 3: SOview batch file find ─────────────────────
-                unique_sos: list[str] = list(dict.fromkeys(
-                    parse_so(sol) for sol in sol_list if parse_so(sol)
-                ))
-
-                _progress({"sol": "Batch Search", "typeId": "soview",
-                           "method": "Scanning SOview folder…",
-                           "fileName": "", "currentFile": 0, "totalFiles": 0})
-
-                t_sv_search = time.perf_counter()
-                soview_files: dict = {}
-                if soview_folder:
-                    soview_files = find_all_pdfs_local_batch(
-                        soview_folder, unique_sos, sort_by_mtime_desc=False
-                    )
+                # Wait for parallel SOview batch search to complete
+                soview_thread.join()
                 sv_found = sum(len([f for f in flist if f.get("found")]) for flist in soview_files.values())
                 tracer.record(
                     phase="3. Batch Search",
