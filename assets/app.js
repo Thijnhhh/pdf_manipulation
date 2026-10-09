@@ -2236,7 +2236,7 @@
             }
 
             resModal.classList.add('active');
-            if (result.tracing_enabled && window._adStartTime) {
+            if (window._adStartTime) {
                 showTracingBenchmarkToast(window._adStartTime, new Date());
                 window._adStartTime = null;
             }
@@ -2367,7 +2367,7 @@
             }
 
             resModal.classList.add('active');
-            if (result.tracing_enabled && window._adStartTime) {
+            if (window._adStartTime) {
                 showTracingBenchmarkToast(window._adStartTime, new Date());
                 window._adStartTime = null;
             }
@@ -2492,7 +2492,7 @@
 
         // Show Results Modal
         resModal.classList.add('active');
-        if (result.tracing_enabled && window._adStartTime) {
+        if (window._adStartTime) {
             showTracingBenchmarkToast(window._adStartTime, new Date());
             window._adStartTime = null;
         }

@@ -60,7 +60,7 @@ from backend.window_utils import flash_app_window
 
 # ── Bridge Tracing ───────────────────────────────────────────
 # Set to False to silence all trace output after manual testing.
-TRACING_ENABLED = True   
+TRACING_ENABLED = False    
 
 _MAX_ARG_LEN = 40  # max chars per argument value in trace output
 

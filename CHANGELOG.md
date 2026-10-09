@@ -29,6 +29,7 @@ All notable changes to this project will be documented in this file.
 - **Frontend Event Binding & Cleanup (`assets/app.js`):**
   - Removed outdated OCR Auto Detect placeholder stub and dead helper `setFetchLoading`.
   - Cleaned up duplicate DOM clone/replacement logic (`dom.btnAutoDetect.replaceWith(...)`) during `pywebviewready` lifecycle initialization.
+  - Decoupled execution benchmark toast from backend `tracing_enabled` flag, ensuring elapsed time is always displayed upon completion of Auto Detect across all modules.
 - **Synchronized PE Metadata & Configurations:**
   - Upgraded application version to `1.3.3` across `config/version.json`, `version_info.txt`, `assets/index.html`, `CHANGELOG.md`, and `Documents.md`.
 
