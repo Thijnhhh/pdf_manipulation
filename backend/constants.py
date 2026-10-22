@@ -43,17 +43,79 @@ def get_credentials_path(strict: bool = True) -> str | None:
     return path
 
 
+_SAMPLE_MODULE_SUBDIRS = ("pfl", "trim", "rfid_ht", "pfl_thermal", "rfid_sb_uq")
+_SAMPLE_DIR_CACHE: str | None = None
+
+
+def _is_valid_sample_dir(path: str) -> bool:
+    """Thư mục hợp lệ nếu chứa ít nhất 1 thư mục con module có metadata.json."""
+    if not path or not os.path.isdir(path):
+        return False
+    return any(
+        os.path.isfile(os.path.join(path, sub, "metadata.json"))
+        for sub in _SAMPLE_MODULE_SUBDIRS
+    )
+
+
+def _ask_user_for_sample_dir() -> str | None:
+    """Hiện hộp thoại chọn thư mục sample_data qua pywebview. Trả về None nếu huỷ."""
+    try:
+        import webview
+        if not webview.windows:
+            return None
+        result = webview.windows[0].create_file_dialog(
+            webview.FOLDER_DIALOG,
+            directory=os.path.expanduser("~"),
+        )
+    except Exception as exc:
+        print(f"[constants] Folder dialog error: {exc}")
+        return None
+    if not result:
+        return None
+    chosen = os.path.normpath(result[0] if isinstance(result, (list, tuple)) else result)
+    # Người dùng lỡ chọn thư mục module con (vd: sample_data/pfl) → lấy thư mục cha
+    if not _is_valid_sample_dir(chosen) and _is_valid_sample_dir(os.path.dirname(chosen)):
+        chosen = os.path.dirname(chosen)
+    return chosen
+
+
 def get_sample_data_dir() -> str:
-    """Đường dẫn thư mục sample_data gốc (ưu tiên thư mục cạnh file .exe khi chạy frozen)."""
+    """
+    Đường dẫn thư mục sample_data gốc. Thứ tự tìm:
+      1. Đường dẫn người dùng đã chọn trước đó (cache trong phiên)
+      2. Cạnh file .exe (frozen) / gốc repo (dev)
+      3. sys._MEIPASS (frozen)
+      4. Không tìm thấy → hiện hộp thoại cho người dùng chọn thư mục
+    """
+    global _SAMPLE_DIR_CACHE
+    if _SAMPLE_DIR_CACHE and _is_valid_sample_dir(_SAMPLE_DIR_CACHE):
+        return _SAMPLE_DIR_CACHE
+
+    candidates = []
     if getattr(sys, "frozen", False):
-        exe_dir = os.path.dirname(sys.executable)
-        sample_next_to_exe = os.path.join(exe_dir, "sample_data")
-        if os.path.exists(sample_next_to_exe):
-            return os.path.normpath(sample_next_to_exe)
-        base = sys._MEIPASS  # type: ignore[attr-defined]
+        candidates.append(os.path.join(os.path.dirname(sys.executable), "sample_data"))
+        candidates.append(os.path.join(sys._MEIPASS, "sample_data"))  # type: ignore[attr-defined]
     else:
-        base = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
-    return os.path.normpath(os.path.join(base, "sample_data"))
+        candidates.append(os.path.join(os.path.dirname(__file__), "..", "sample_data"))
+
+    for c in candidates:
+        c = os.path.normpath(c)
+        if _is_valid_sample_dir(c):
+            _SAMPLE_DIR_CACHE = c
+            return c
+
+    # Không tìm thấy → hỏi người dùng (lặp lại tới khi hợp lệ hoặc huỷ)
+    while True:
+        chosen = _ask_user_for_sample_dir()
+        if chosen is None:
+            break
+        if _is_valid_sample_dir(chosen):
+            _SAMPLE_DIR_CACHE = chosen
+            return chosen
+        print(f"[constants] Thư mục không hợp lệ (thiếu <module>/metadata.json): {chosen}")
+
+    # Huỷ chọn → trả về đường dẫn mặc định; sample_service sẽ báo lỗi metadata.json
+    return os.path.normpath(candidates[0])
 
 
 

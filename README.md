@@ -209,7 +209,7 @@ Phần này cung cấp thông tin kỹ thuật phục vụ việc bảo trì, ph
 * **Backend:** Python 3.12+ (CPython 64-bit).
 * **WSGI Server nội bộ:** `bottle 0.13.4` đóng vai trò micro-server cục bộ phục vụ assets và hiển thị ảnh thu nhỏ (thumbnail) từ thư mục `%TEMP%`.
 * **Xử lý PDF:** `PyMuPDF (fitz) 1.28.2` — thư viện C siêu tốc chịu trách nhiệm giải mã vector, trích xuất trang và kết xuất ảnh DPI.
-* **Xử lý Barcode & OCR:** `pyzbar` (thư viện C libzbar-64) quét mã vạch 1D tuyến tính; `pytesseract OCR` bọc quanh engine Google Tesseract v5 (phải tải và cài đặt thêm).
+* **Xử lý Barcode & OCR:** `pyzbar` (thư viện C libzbar-64). Requirement: Cài Visual C++ 2013 x64 Redistributable; `pytesseract OCR` bọc quanh engine Google Tesseract v5. Requirement: Cài Tesseract OCR for Windows.
 * **Tích hợp Cloud:** Google Cloud SDK (`google-cloud-bigquery`, `gspread`, `google-api-python-client`) chạy xác thực tài khoản dịch vụ (Service Account JWT).
 * **Frontend:** Vanilla HTML5, Modern CSS (Glassmorphism), Vanilla JavaScript ES6+ (Zero-framework).
 
@@ -235,10 +235,10 @@ Phần này cung cấp thông tin kỹ thuật phục vụ việc bảo trì, ph
 Dự án sử dụng file cấu hình [build.spec](file:///c:/Users/1228411/Desktop/Merger%20Tool/pdf_manipulation_desktop%20(Github)/build.spec) chuẩn hóa cho PyInstaller:
 
 ```powershell
-# Chạy lệnh đóng gói không hỏi lại
-pyinstaller --noconfirm build.spec
+# Chạy lệnh đóng gói
+.\venv\Scripts\python.exe -m PyInstaller --noconfirm build.spec
 ```
-* **Kết quả:** File thực thi độc lập duy nhất sẽ được xuất ra tại `dist/PDF Manipulation v1.3.3.exe` (đã bao gồm toàn bộ icons, dll barcode và metadata bản quyền Windows).
+* **Kết quả:** File thực thi độc lập duy nhất sẽ được xuất ra tại `dist/PDF Manipulation v1.3.3.exe`.
 
 ---
 
