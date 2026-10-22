@@ -76,6 +76,7 @@ a = Analysis(
         'backend.pdf_deduplicator',
         'backend.pdf_combiner',
         'backend.trim_service',
+        'backend.sample_service',
         'backend.updater',
         'backend.window_utils',
         'pyzbar',

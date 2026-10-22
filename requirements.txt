@@ -15,7 +15,8 @@ pyinstaller-hooks-contrib==2026.6
 pymupdf==1.28.2
 pytesseract==0.3.13
 pywebview==6.2.1
-
+pyzbar==0.1.9
+requests==2.34.2
 # ── PDF Merger (Trim): BigQuery dependencies ──────────────────────
 google-cloud-bigquery==3.45.1
 google-cloud-bigquery-storage==2.41.0

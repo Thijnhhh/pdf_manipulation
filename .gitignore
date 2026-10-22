@@ -25,8 +25,7 @@ vendor/tesseract/
 *.swp
 *.swo
 
-# ── File tạm hệ điều hành ──
-Thumbs.db
-Desktop.ini
 
-Test Script for new Module/
+# -- Sample data: keep structure, ignore export results --
+sample_data/**/output/*
+!sample_data/**/output/.gitkeep

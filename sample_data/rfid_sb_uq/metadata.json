@@ -1,0 +1,10 @@
+{
+  "module": "merger_rfid_sb",
+  "description": "Dữ liệu mẫu cho phân hệ PDF Merger (RFID SB UQ)",
+  "instructions": "Copy file PDF SOview vào soview/, copy file bản vẽ layout vào layout/.",
+  "sols": [
+    {
+      "sol": "146323427-1"
+    }
+  ]
+}

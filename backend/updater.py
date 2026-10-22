@@ -93,6 +93,11 @@ def check_for_update() -> dict:
     if REMOTE_VERSION_FILE_ID.startswith("REPLACE"):
         return {"update_available": False, "current_version": local_ver, "remote_version": local_ver}
 
+    # Chạy Offline / Không có credentials: bỏ qua cập nhật Drive, không log lỗi
+    from backend.constants import has_credentials
+    if not has_credentials():
+        return {"update_available": False, "current_version": local_ver, "remote_version": local_ver, "offline": True}
+
     try:
         service = _drive_service()
         request = service.files().get_media(fileId=REMOTE_VERSION_FILE_ID)

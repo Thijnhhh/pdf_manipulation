@@ -60,8 +60,7 @@ from backend.window_utils import flash_app_window
 
 # ── Bridge Tracing ───────────────────────────────────────────
 # Set to False to silence all trace output after manual testing.
-TRACING_ENABLED = False    
-
+TRACING_ENABLED = True    
 _MAX_ARG_LEN = 40  # max chars per argument value in trace output
 
 
@@ -169,6 +168,17 @@ class BridgeApi:
         while the app window is in the background.
         """
         return flash_app_window(self._window, window_title="PDF Manipulation Tool")
+
+    @_trace
+    def load_sample_data(self, module_id: str, custom_dir: str = "") -> dict:
+        """
+        Public API: nạp dữ liệu mẫu và đường dẫn folder cho module hiện tại.
+        """
+        try:
+            from backend.sample_service import load_sample_metadata
+            return load_sample_metadata(module_id, custom_dir=custom_dir)
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
 
     # ── 1. Initial Data ──────────────────────────────────────
 
@@ -762,6 +772,8 @@ class BridgeApi:
         flags_json:         str = "{}",
         job_map_json:       str = "{}",
         line_str:           str = "PFL",
+        is_sample_mode:     bool = False,
+        sample_folder:      str = "",
     ) -> None:
         """
         Async: runs the Auto Detect engine for all SOLs and PDF types.
@@ -774,6 +786,8 @@ class BridgeApi:
                           Used for layout file matching by job code.
                           Omit or pass "{}" for PFL.
             line_str:     Line identifier (e.g. "PFL", "RFID SB"). Default "PFL".
+            is_sample_mode: True nếu đang chạy với dữ liệu mẫu (offline mock BigQuery).
+            sample_folder:  Đường dẫn thư mục sample_data của module.
 
         Pushes to JS:
           window._onAutoDetectProgress({ sol, typeId, method, page, totalPages })
@@ -831,8 +845,12 @@ class BridgeApi:
                                         except ValueError:
                                             pass
 
-                                if pairs:
-                                    bq_records = fetch_bigquery_job(pairs, tracing_enabled=TRACING_ENABLED)
+                                if pairs or is_sample_mode:
+                                    if is_sample_mode:
+                                        from backend.sample_service import get_mock_bigquery_job
+                                        bq_records = get_mock_bigquery_job(flagged_sols, sample_folder)
+                                    else:
+                                        bq_records = fetch_bigquery_job(pairs, tracing_enabled=TRACING_ENABLED)
                                     jmap, warns = validate_pfl_job_data(bq_records, flagged_sols)
                                     bq_shared["job_map"] = jmap
                                     bq_shared["warnings"] = warns
@@ -907,6 +925,8 @@ class BridgeApi:
         sol_list_json:      str,
         folder_inputs_json: str,
         output_path:        str,
+        is_sample_mode:     bool = False,
+        sample_folder:      str = "",
     ) -> None:
         """Run PDF Merger (Trim) detection pipeline."""
         self._auto_detect_cancel.clear()
@@ -985,10 +1005,14 @@ class BridgeApi:
                 bq_records: list[dict] = []
                 bq_error: str = ""
                 try:
-                    bq_records = fetch_bigquery_te(pairs, tracing_enabled=TRACING_ENABLED)
+                    if is_sample_mode:
+                        from backend.sample_service import get_mock_bigquery_te
+                        bq_records = get_mock_bigquery_te(sol_list, sample_folder)
+                    else:
+                        bq_records = fetch_bigquery_te(pairs, tracing_enabled=TRACING_ENABLED)
                     tracer.record(
                         phase="1. BigQuery Fetch",
-                        target="Stored Procedure get_TE",
+                        target="Stored Procedure get_TE (Mock)" if is_sample_mode else "Stored Procedure get_TE",
                         t0=t_bq,
                         details=f"{len(pairs)} pairs sent, {len(bq_records)} rows returned",
                     )

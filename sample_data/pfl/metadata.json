@@ -1,0 +1,19 @@
+{
+  "module": "merger",
+  "description": "Dữ liệu mẫu cho phân hệ PDF Merger (PFL)",
+  "instructions": "Copy file PDF SOview vào thư mục soview/, copy file PDF Layout vào thư mục layout/. Điền mã SOL và Job (8 số) tương ứng bên dưới.",
+  "sols": [
+    {
+      "sol": "149784437-1",
+      "job": ""
+    },
+    {
+      "sol": "149784437-2",
+      "job": ""
+    },
+    {
+      "sol": "149784437-3",
+      "job": ""
+    }
+  ]
+}

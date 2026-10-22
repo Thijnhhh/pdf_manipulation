@@ -2072,3 +2072,41 @@
         font-size: 0.78rem;
         font-style: italic;
     }
+/* ── Sample / Demo Data Compact Trigger ─────────────────────── */
+.form-group__label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+.form-group__label-row label {
+    margin-bottom: 0 !important;
+}
+.sample-action-wrapper {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.btn-sample-compact {
+    background: transparent;
+    border: none;
+    padding: 2px 6px;
+    font-size: 0.76rem;
+    font-weight: 500;
+    color: var(--text-tertiary, #94a3b8);
+    cursor: pointer;
+    border-radius: 4px;
+    transition: color 0.15s ease, background 0.15s ease;
+}
+.btn-sample-compact:hover {
+    color: var(--primary, #4f46e5);
+    background: rgba(99, 102, 241, 0.08);
+}
+.sample-mode-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background-color: #10b981;
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.7);
+    flex-shrink: 0;
+}

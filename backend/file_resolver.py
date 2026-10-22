@@ -279,7 +279,8 @@ def find_all_pdfs_local_batch(
                                 else:
                                     name_lower = f_name.lower()
                                     for so_lower, orig_so in lower_so_map.items():
-                                        if so_lower in name_lower:
+                                        is_match = name_lower.startswith(("nike", "nk")) if so_lower == "nike" else (so_lower in name_lower)
+                                        if is_match:
                                             f_path = entry.path
                                             item = {"found": True, "file_id": f_path, "path": f_path, "name": f_name, "mtime": f_mtime}
                                             with results_lock:

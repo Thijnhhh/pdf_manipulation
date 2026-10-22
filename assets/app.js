@@ -57,7 +57,9 @@
         exportMode: 'split',
         isExporting: false,
 
-        lightbox: { solCode: '', typeId: '', pageIndex: 1, scale: 1.0, rotation: 0 }
+        lightbox: { solCode: '', typeId: '', pageIndex: 1, scale: 1.0, rotation: 0 },
+        isSampleMode: false,
+        sampleFolder: ''
     };
 
     // ── DOM References ─────────────────────────────────────
@@ -82,6 +84,8 @@
         dom.fetchLabel = document.getElementById('fetch-label');
         dom.inputError = document.getElementById('input-error');
         dom.btnAutoDetect = document.getElementById('btn-auto-detect');
+        dom.btnLoadSample = document.getElementById('btn-load-sample');
+        dom.sampleModeBadge = document.getElementById('sample-mode-badge');
 
         dom.btnMergerBack = document.getElementById('btn-merger-back');
         dom.btnBack = document.getElementById('btn-back');
@@ -338,6 +342,10 @@
 
     function enterMergerModule(line = 'PFL') {
         state.currentLine = line;
+        state.isSampleMode = false;
+        state.sampleFolder = '';
+        if (dom.sampleModeBadge) dom.sampleModeBadge.style.display = 'none';
+
         const isRfid = line === 'RFID HT';
         const isTrim = line === 'Trim';
         const isPflThermal = line === 'PFL THERMAL';
@@ -517,6 +525,84 @@
 
         // Preset change
         dom.presetSelect.addEventListener('change', onPresetChange);
+
+        // Load Sample Data (Demo / Offline Mode)
+        if (dom.btnLoadSample) {
+            dom.btnLoadSample.addEventListener('click', async () => {
+                try {
+                    dom.btnLoadSample.disabled = true;
+                    dom.btnLoadSample.textContent = '⏳ Loading...';
+                    const res = await window.pywebview.api.load_sample_data(state.currentLine || 'PFL');
+                    dom.btnLoadSample.disabled = false;
+                    dom.btnLoadSample.innerHTML = '<span>📁 Load sample</span>';
+
+                    if (!res || !res.success) {
+                        showError(res && res.error ? res.error : 'Không tìm thấy dữ liệu mẫu cho module này.');
+                        return;
+                    }
+                    hideError();
+
+                    // 1. Điền đường dẫn các thư mục
+                    if (res.soview_folder) {
+                        const inp = document.getElementById('folder-soview');
+                        if (inp) {
+                            inp.value = res.soview_folder;
+                            state.folderInputs['soview'] = res.soview_folder;
+                        }
+                    }
+                    if (res.layout_folder) {
+                        const inp = document.getElementById('folder-layout');
+                        if (inp) {
+                            inp.value = res.layout_folder;
+                            state.folderInputs['layout'] = res.layout_folder;
+                        }
+                    }
+                    if (res.output_folder && dom.outputFolderInput) {
+                        dom.outputFolderInput.value = res.output_folder;
+                        state.outputPath = res.output_folder;
+                    }
+
+                    // 2. Bỏ chọn Drive toggles
+                    pdfTypes.forEach(t => {
+                        const cb = document.getElementById(`is-drive-${t.id}`);
+                        const lbl = document.getElementById(`drive-toggle-${t.id}`);
+                        if (cb) {
+                            cb.checked = false;
+                            state.isDrive[t.id] = false;
+                            if (lbl) lbl.classList.remove('active');
+                        }
+                    });
+
+                    // 3. Reset Preset dropdown
+                    if (dom.presetSelect) dom.presetSelect.value = '';
+
+                    // 4. Chuyển sang Manual SOL và nạp danh sách
+                    onInputModeTabSwitch('manual');
+                    if (res.sols && res.sols.length > 0) {
+                        dom.manualSolTextarea.value = res.sols.join('\n');
+                        state.solList = [...res.sols];
+                    }
+                    if (state.currentLine === 'RFID HT' && res.sol_entries) {
+                        state.rfidEntries = res.sol_entries;
+                    }
+
+                    // 5. Kích hoạt Sample Mode và hiển thị badge (chấm tròn tinh tế)
+                    state.isSampleMode = true;
+                    state.sampleFolder = res.sample_dir || '';
+                    if (dom.sampleModeBadge) dom.sampleModeBadge.style.display = 'inline-block';
+
+                    validateInputs();
+                    renderSolList();
+                    showToast(`Đã nạp Sample Data cho ${state.currentLine} thành công!`, 'success');
+                } catch (err) {
+                    if (dom.btnLoadSample) {
+                        dom.btnLoadSample.disabled = false;
+                        dom.btnLoadSample.innerHTML = '<span>📁 Load sample</span>';
+                    }
+                    showError('Lỗi nạp sample data: ' + err);
+                }
+            });
+        }
 
         // Input validation triggers
         dom.manualSolTextarea.addEventListener('input', validateInputs);
@@ -733,6 +819,9 @@
 
     function onPresetChange() {
         const idx = dom.presetSelect.value;
+        state.isSampleMode = false;
+        state.sampleFolder = '';
+        if (dom.sampleModeBadge) dom.sampleModeBadge.style.display = 'none';
 
         // Hide panel and clear solList when no preset is selected
         if (idx === '') {
@@ -1973,7 +2062,9 @@
         window.pywebview.api.run_auto_detect_trim(
             JSON.stringify(solList),
             JSON.stringify(state.folderInputs),
-            state.outputPath
+            state.outputPath,
+            Boolean(state.isSampleMode),
+            state.sampleFolder || ""
         );
     }
 
@@ -2086,7 +2177,9 @@
             Boolean(adState.ocrEnabled),
             flagsJson,
             jobMapJson,
-            state.currentLine || 'PFL'
+            state.currentLine || 'PFL',
+            Boolean(state.isSampleMode),
+            state.sampleFolder || ""
         );
     }
 
@@ -2174,14 +2267,44 @@
                     ⚠️ BigQuery error: ${escHtml(result.bq_error)}</div>`;
             }
 
-            // Build detail table for each SOL
+            // Build detail table for each SOL & detect TE mismatch
             const solList = Object.keys(result.assembly || {});
+
+            // Check for SOLs where targetTE > 0 and tePages !== targetTE
+            const teMismatches = [];
+            solList.forEach(sol => {
+                const meta = bqMeta[sol] || {};
+                const numTE = (meta.list_te || []).length;
+                const tePages = meta.te_pages || 0;
+                if (numTE > 0 && numTE !== tePages) {
+                    teMismatches.push({
+                        sol,
+                        numTE,
+                        detectedPages: tePages,
+                    });
+                }
+            });
+
+            if (teMismatches.length > 0) {
+                warnHtml += `
+                  <div style="background:rgba(239,68,68,0.1);border:1px solid var(--accent-danger,#ef4444);
+                              border-radius:6px;padding:10px 14px;margin-bottom:12px;">
+                    <div style="font-weight:700;color:var(--accent-danger,#ef4444);margin-bottom:6px;">⚠️ TE Pages Mismatch</div>
+                    <div style="font-size:0.82rem;display:flex;flex-direction:column;gap:3px;">
+                      ${teMismatches.map(m => `
+                        <div><code style="font-family:monospace;font-weight:600;">${escHtml(m.sol)}</code>: Number of TE: <b>${m.numTE}</b>, Number of detected pages: <b style="color:var(--accent-danger,#ef4444);">${m.detectedPages}</b></div>
+                      `).join('')}
+                    </div>
+                  </div>`;
+            }
+
             let tableRows = solList.map(sol => {
                 const meta = bqMeta[sol] || {};
                 const svPages = meta.soview_pages || 0;
                 const tePages = meta.te_pages || 0;
                 const totalP = svPages + tePages;
                 const targetTE = (meta.list_te || []).length;
+                const isMismatch = targetTE > 0 && tePages !== targetTE;
                 const svFile = meta.soview_file || '—';
                 const svPath = meta.soview_path || '';
                 const teFile = meta.te_file || '—';
@@ -2198,11 +2321,13 @@
                       ${svPages > 0 ? `<span style="color:var(--accent-success);font-weight:600;">${svPages}</span>` : '<span style="color:var(--text-tertiary);">0</span>'}
                       <br><span title="${escHtml(svPath)}" style="font-size:0.72rem;color:var(--text-secondary);cursor:default;" title="${escHtml(svPath)}">${escHtml(svFile)}</span>
                     </td>
-                    <td style="padding:8px 10px;text-align:center;">
-                      ${tePages > 0 ? `<span style="color:var(--accent-success);font-weight:600;">${tePages}</span>` : '<span style="color:var(--text-tertiary);">0</span>'}
+                    <td style="padding:8px 10px;text-align:center;${isMismatch ? 'background:rgba(239,68,68,0.08);' : ''}">
+                      ${tePages > 0
+                        ? `<span style="color:${isMismatch ? 'var(--accent-danger,#ef4444)' : 'var(--accent-success)'};font-weight:700;">${tePages}${isMismatch ? ' ⚠️' : ''}</span>`
+                        : `<span style="color:${isMismatch ? 'var(--accent-danger,#ef4444)' : 'var(--text-tertiary)'};font-weight:${isMismatch ? '700' : 'normal'};">0${isMismatch ? ' ⚠️' : ''}</span>`}
                       <br><span style="font-size:0.72rem;color:var(--text-secondary);cursor:default;" title="${escHtml(tePath)}">${escHtml(teFile)}</span>
                     </td>
-                    <td style="padding:8px 10px;text-align:center;font-weight:600;">${targetTE || '—'}</td>
+                    <td style="padding:8px 10px;text-align:center;font-weight:600;${isMismatch ? 'color:var(--accent-danger,#ef4444);background:rgba(239,68,68,0.08);' : ''}">${targetTE || '—'}</td>
                     <td style="padding:8px 10px;text-align:center;font-weight:700;">${totalP}</td>
                     <td style="padding:8px 10px;text-align:center;">${previewBtn}</td>
                   </tr>`;

@@ -1,0 +1,25 @@
+{
+  "module": "merger_rfid",
+  "description": "Dữ liệu mẫu cho phân hệ PDF Merger (RFID HT)",
+  "instructions": "Copy file PDF SOview vào soview/, copy file bản vẽ layout theo số Job vào layout/ (tên file chứa mã Job). Khai báo sol, job, rb, flag bên dưới.",
+  "sols": [
+    {
+      "sol": "149890125-1",
+      "job": "21902982",
+      "rb": "RB-A1",
+      "flag": false
+    },
+    {
+      "sol": "149890126-1",
+      "job": "21903739",
+      "rb": "RB-A2",
+      "flag": false
+    },
+    {
+      "sol": "149890128-1",
+      "job": "21903626",
+      "rb": "RB-A3",
+      "flag": false
+    }
+  ]
+}

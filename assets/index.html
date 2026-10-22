@@ -161,7 +161,16 @@
 
                             <!-- User Preset -->
                             <div class="form-group">
-                                <label for="preset-select">User Preset</label>
+                                <div class="form-group__label-row">
+                                    <label for="preset-select">User Preset</label>
+                                    <div class="sample-action-wrapper">
+                                        <button type="button" id="btn-load-sample" class="btn-sample-compact"
+                                            title="Nạp dữ liệu mẫu để chạy demo offline không cần Google Service Account">
+                                            <span>📁 Load sample</span>
+                                        </button>
+                                        <span id="sample-mode-badge" class="sample-mode-dot" style="display: none;" title="Đang chạy chế độ dữ liệu mẫu"></span>
+                                    </div>
+                                </div>
                                 <select id="preset-select">
                                     <option value="">— Select a user —</option>
                                 </select>

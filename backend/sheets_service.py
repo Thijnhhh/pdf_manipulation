@@ -74,6 +74,10 @@ def get_all_initial_data(line: str = "PFL") -> dict:
     Uses exponential backoff for reliability.
     """
     global _CLIENT_CACHE
+    from backend.constants import has_credentials
+    if not has_credentials():
+        return {"presets": [], "solMap": {}}
+
     target_line = line.strip().upper()
 
     for attempt in range(1, 4):

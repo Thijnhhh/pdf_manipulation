@@ -10,11 +10,22 @@ import os
 import sys
 
 # ── 1. Credentials Resolution ───────────────────────────────
-def get_credentials_path() -> str:
+def has_credentials() -> bool:
+    """Kiểm tra file credentials.json có tồn tại không mà không ném lỗi."""
+    if getattr(sys, "frozen", False):
+        base = sys._MEIPASS  # type: ignore[attr-defined]
+    else:
+        base = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+    path = os.path.normpath(os.path.join(base, "config", "credentials.json"))
+    return os.path.exists(path)
+
+
+def get_credentials_path(strict: bool = True) -> str | None:
     """
     Resolve credentials.json path for local development and PyInstaller bundles.
       • plain script: <repo_root>/config/credentials.json
       • PyInstaller exe: sys._MEIPASS/config/credentials.json
+      • strict=False: trả về None thay vì raise FileNotFoundError
     """
     if getattr(sys, "frozen", False):
         base = sys._MEIPASS  # type: ignore[attr-defined]
@@ -23,11 +34,27 @@ def get_credentials_path() -> str:
 
     path = os.path.normpath(os.path.join(base, "config", "credentials.json"))
     if not os.path.exists(path):
+        if not strict:
+            return None
         raise FileNotFoundError(
             f"credentials.json not found at: {path}\n"
             "Place your Google Service Account key in the config/ folder."
         )
     return path
+
+
+def get_sample_data_dir() -> str:
+    """Đường dẫn thư mục sample_data gốc (ưu tiên thư mục cạnh file .exe khi chạy frozen)."""
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        sample_next_to_exe = os.path.join(exe_dir, "sample_data")
+        if os.path.exists(sample_next_to_exe):
+            return os.path.normpath(sample_next_to_exe)
+        base = sys._MEIPASS  # type: ignore[attr-defined]
+    else:
+        base = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+    return os.path.normpath(os.path.join(base, "sample_data"))
+
 
 
 # ── 2. Google BigQuery ──────────────────────────────────────
