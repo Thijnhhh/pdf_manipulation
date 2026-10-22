@@ -27,5 +27,4 @@ vendor/tesseract/
 
 
 # -- Sample data: keep structure, ignore export results --
-sample_data/**/output/*
-!sample_data/**/output/.gitkeep
+sample_data/
