@@ -42,6 +42,7 @@ Trong các nhà máy in ấn nhãn mác bao bì và sản xuất thẻ thông mi
 * 🎯 **Chính xác tuyệt đối:** Quét đọc barcode, OCR, text trên từng page file pdf để lọc page cần dùng.
 * ☁️ **Kết nối dữ liệu** Tự động tra cứu mã việc (Job Code) và số Ticket Express (TE) trực tiếp từ kho dữ liệu Google Cloud BigQuery và Google Sheets, tự tìm file theo folder chỉ định và SOL input vào.
 
+**Note**: tool được đóng gói bằng pyinstaller để phục vụ nội bộ, backend hiện tại chứa nhiều quy tắc nghiệp vụ liên quan đến ngành in ấn, để hoạt động tốt nhất customize lại backend
 ---
 
 # 2. Sơ đồ quy trình hoạt động
