@@ -20,6 +20,7 @@
    - [PDF Combine (Gộp file nhanh)](#pdf-combine)
 6. [Technical overview](#6-technical-overview)
    - [Kiến trúc & Công nghệ](#kiến-trúc--công-nghệ)
+   - [Cấu trúc thư mục Codebase](#cấu-trúc-thư-mục-codebase)
    - [Cài đặt môi trường phát triển (Dev Setup)](#cài-đặt-môi-trường-phát-triển-dev-setup)
    - [Quy trình đóng gói file .exe](#quy-trình-đóng-gói-file-exe)
 7. [Cập nhật tự động (OTA Update) & Xử lý sự cố](#7-cập-nhật-tự-động-ota-update--xử-lý-sự-cố)
@@ -38,11 +39,10 @@ Trong các nhà máy in ấn nhãn mác bao bì và sản xuất thẻ thông mi
 * Thao tác thủ công mất từ **2 đến 4 tiếng mỗi ngày**, rất dễ nhầm lẫn giữa các mã hàng tương tự nhau.
 
 ### Lợi ích mang lại
-* ⚡ **Tốc độ vượt trội:** Xử lý hàng chục đơn hàng và duyệt hàng trăm trang PDF, trung bình 1-2s/SOL.
+* ⚡ **Tốc độ vượt trội:** Xử lý hàng chục đơn hàng và duyệt hàng trăm trang PDF chỉ trong **15 - 45 giây**.
 * 🎯 **Chính xác tuyệt đối:** Quét đọc barcode, OCR, text trên từng page file pdf để lọc page cần dùng.
 * ☁️ **Kết nối dữ liệu** Tự động tra cứu mã việc (Job Code) và số Ticket Express (TE) trực tiếp từ kho dữ liệu Google Cloud BigQuery và Google Sheets, tự tìm file theo folder chỉ định và SOL input vào.
 
-**Note**: tool được đóng gói bằng pyinstaller để phục vụ nội bộ, backend hiện tại chứa nhiều quy tắc nghiệp vụ liên quan đến ngành in ấn, để hoạt động tốt nhất hãy customize lại backend
 ---
 
 # 2. Sơ đồ quy trình hoạt động
@@ -213,6 +213,52 @@ Phần này cung cấp thông tin kỹ thuật phục vụ việc bảo trì, ph
 * **Xử lý Barcode & OCR:** `pyzbar` (thư viện C libzbar-64). Requirement: Cài Visual C++ 2013 x64 Redistributable; `pytesseract OCR` bọc quanh engine Google Tesseract v5. Requirement: Cài Tesseract OCR for Windows.
 * **Tích hợp Cloud:** Google Cloud SDK (`google-cloud-bigquery`, `gspread`, `google-api-python-client`) chạy xác thực tài khoản dịch vụ (Service Account JWT).
 * **Frontend:** Vanilla HTML5, Modern CSS (Glassmorphism), Vanilla JavaScript ES6+ (Zero-framework).
+
+### Cấu trúc thư mục Codebase
+
+```text
+pdf_manipulation_desktop/
+│
+├── main.py                             # Điểm khởi chạy ứng dụng (Khởi tạo WebView2, Bottle server, Bridge API)
+├── build.spec                          # Cấu hình đóng gói PyInstaller (Bundling file, hiddenimports, UPX)
+├── version_info.txt                    # Metadata nhị phân Windows PE (Version, Copyright, Company)
+├── requirements.txt                    # Danh sách các thư viện Python phụ thuộc
+├── CHANGELOG.md                        # Lịch sử cập nhật và thay đổi qua các phiên bản
+├── Documents.md                        # Tài liệu đặc tả kỹ thuật chi tiết & giải thuật hệ thống
+├── README.md                           # Hướng dẫn sử dụng và giới thiệu tổng quan dự án
+├── LICENSE                             # Giấy phép bản quyền mã nguồn
+│
+├── backend/                            # Tầng xử lý logic nghiệp vụ trung tâm (Core Python Engine)
+│   ├── __init__.py                     # Định danh package Python
+│   ├── bridge.py                       # Cầu nối IPC (BridgeApi) giữa giao diện JS và Python, điều phối đa luồng
+│   ├── constants.py                    # Quản lý hằng số tập trung: Regex mẫu, GCP IDs, cấu hình đường dẫn
+│   ├── bigquery_service.py             # Dịch vụ truy vấn BigQuery: Gọi các Stored procedures
+│   ├── file_resolver.py                # Phân giải & quét file PDF từ ổ đĩa chia sẻ UNC nội bộ và Google Drive
+│   ├── pdf_detector.py                 # Backend tự động nhận diện: Quét Barcode 1D, Text số, OCR Tesseract
+│   ├── pdf_deduplicator.py             # Backend khử trùng lặp trang bản vẽ (Thuật toán Cluster-Jump Binary Search)
+│   ├── pdf_combiner.py                 # Backend gộp nhiều file PDF rời rạc theo thư mục và mã đơn hàng
+│   ├── pdf_processor.py                # Backend xử lý PDF PyMuPDF (fitz): Render thumbnail, cắt ghép vector PDF
+│   ├── trim_service.py                 # Backend nghiệp vụ module Trim : Quét mẫu SOview 3 regex và đối chiếu mã TE
+│   ├── sample_service.py               # Backend quản lý nạp dữ liệu mẫu (Sample/Demo Data) cho chế độ Offline/Demo
+│   ├── sheets_service.py               # Kết nối Google Sheets API: Đọc danh sách User Presets và danh sách SOL
+│   ├── updater.py                      # Backend cập nhật từ xa OTA: Kiểm tra phiên bản Google Drive & cập nhật nền
+│   └── window_utils.py                 # Tiện ích Windows Win32 API qua ctypes: Nhấp nháy thanh Taskbar thông báo
+│
+├── assets/                             # Frontend (Presentation Layer - WebView2)
+│   ├── index.html                      # Cấu trúc giao diện ứng dụng Single Page (SPA)
+│   ├── styles.css                      # CSS (Glassmorphism, Dark/Light palettes, Responsive)
+│   ├── app.js                          # Logic tương tác UI: Quản lý trạng thái, DOM ảo, gọi API Bridge
+│   ├── icon.ico                        # Icon ứng dụng trên Windows
+│   └── vendor/                         # Thư viện JavaScript hỗ trợ giao diện
+│       ├── sortable.min.js             # Hỗ trợ kéo - thả (Drag & Drop) sắp xếp trang PDF thủ công
+│       └── split.min.js                # Hỗ trợ kéo giãn kích thước các cột giao diện (Resizable gutters)
+│
+├── config/                             # Cấu hình và chứng thực ứng dụng
+│   ├── credentials.json.example        # File mẫu cấu hình Service Account Key của Google Cloud
+│   └── version.json                    # Version tool
+│
+└── pictures/                           # Hình ảnh chụp màn hình và sơ đồ minh họa tài liệu README
+```
 
 ### Cài đặt môi trường phát triển (Dev Setup)
 
