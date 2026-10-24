@@ -39,7 +39,7 @@ Trong các nhà máy in ấn nhãn mác bao bì và sản xuất thẻ thông mi
 * Thao tác thủ công mất từ **2 đến 4 tiếng mỗi ngày**, rất dễ nhầm lẫn giữa các mã hàng tương tự nhau.
 
 ### Lợi ích mang lại
-* ⚡ **Tốc độ vượt trội:** Xử lý hàng chục đơn hàng và duyệt hàng trăm trang PDF chỉ trong **15 - 45 giây**.
+* ⚡ **Tốc độ vượt trội:** Xử lý hàng chục đơn hàng và duyệt hàng trăm trang PDF.
 * 🎯 **Chính xác tuyệt đối:** Quét đọc barcode, OCR, text trên từng page file pdf để lọc page cần dùng.
 * ☁️ **Kết nối dữ liệu** Tự động tra cứu mã việc (Job Code) và số Ticket Express (TE) trực tiếp từ kho dữ liệu Google Cloud BigQuery và Google Sheets, tự tìm file theo folder chỉ định và SOL input vào.
 
