@@ -296,3 +296,6 @@ Dự án sử dụng file cấu hình [build.spec](file:///c:/Users/1228411/Desk
 * Khi có bản phát hành mới, huy hiệu thông báo màu đỏ sẽ sáng lên ở góc màn hình Dashboard.
 * Khi người dùng nhấn nút cập nhật, ứng dụng sẽ tải gói cập nhật về thư mục tạm, tự động kích hoạt script nền thay thế file `.exe` cũ và khởi động lại phiên bản mới một cách mượt mà.
 
+---
+
+**Author:** [@thijnhhh](https://github.com/Thijnhhh) — Phung Duc Thinh (*Build for internal use-only*)
